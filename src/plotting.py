@@ -1,13 +1,17 @@
 """Plot the field with objects, uncertainty ellipses and N/E arrows."""
 
+import os
+
 import astropy.units as u
+from astropy.visualization import AsinhStretch, ImageNormalize, ZScaleInterval
 import matplotlib.pyplot as plt
 import numpy as np
-from astropy.visualization import AsinhStretch, ImageNormalize, ZScaleInterval
 from matplotlib.patches import Ellipse
 
 
-def plot_field(info, table, angle_north, angle_east, magnify=1, survivors =None, title =None, output_file = None, show = True):
+def plot_field(info, table, angle_north, angle_east, magnify=1,
+               survivors = None, title = None, output_dir = None, 
+               output_file = None, show = True):
     """Show the image on a WCS axis. 'table' must have the x_pix/y_pix columns
     (added by filter_in_image). Ellipses are magnified by 'magnify'.
 
@@ -67,6 +71,8 @@ def plot_field(info, table, angle_north, angle_east, magnify=1, survivors =None,
 
     ax.set_title(f"Uncertainty ellipses magnified x{magnify}")
     if output_file is not None:
+        if output_dir is not None:
+            output_file = os.path.join(output_dir+"/plots", output_file)
         fig.savefig(output_file, dpi = 300, bbox_inches = "tight")
     if show:
         plt.show()
