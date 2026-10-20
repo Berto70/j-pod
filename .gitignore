@@ -10,3 +10,4 @@ data/j02*
 __pycache__
 output/plots/*
 output/tables/*
+data/test.fits
