@@ -7,17 +7,17 @@ from astropy.coordinates import SkyCoord
 import numpy as np
 import matplotlib.pyplot as plt
 
-from catalogs import fetch_jpl_data, query_skybot
-from image_geometry import (
+from .catalogs import fetch_jpl_data, query_skybot
+from .image_geometry import (
     add_ellipse_image_angle,
     filter_in_image,
     image_orientation,
     load_image,
     search_radius,
 )
-from plotting import plot_field
-from detection import add_detection_probability
-from output import save_table_csv
+from .plotting import plot_field
+from .detection import add_detection_probability
+from .output import save_table_csv
 
 MARGIN = 5 * u.arcmin    # widen the cone so ellipses of nearby objects are not missed
 MAGNIFY = 10             # ellipse magnification in the plot (1 = true size)
@@ -34,19 +34,20 @@ def create_parser() -> argparse.ArgumentParser:
     """Parsing CLI arguments."""
 
     project_root = Path(__file__).resolve().parent.parent
+    print(f"Project root: {project_root}")
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("-d", "--dir", default=project_root / "data")  # FITS directory
-    parser.add_argument("-f", "--file", default="Null")  # FITS file name
-    parser.add_argument("-outdir", "--output_dir", default=project_root / "output")  # output directory
+    parser.add_argument("-d", "--dir", default=project_root / "data", help="FITS files directory")  # FITS directory
+    parser.add_argument("-f", "--file", default="Null", help="FITS file name. Use if you want to process a single file")  # FITS file name
+    parser.add_argument("-outdir", "--output_dir", default=project_root / "output", help="Output directory")  # output directory
 
-    parser.add_argument("-o", "--observatory", default="I41")  # observatory code
-    parser.add_argument("-vlim", "--vlim", type=float, default=21.5)
-    parser.add_argument("-sigv", "--sigma_v", type=float, default=0.5)
-    parser.add_argument("-pmin", "--pmin", type=float, default=0.05)
+    parser.add_argument("-obs", "--observatory", default="I41", help="Observatory code")  # observatory code
+    parser.add_argument("--vlim", type=float, default=21.5, help="Limiting magnitude of the image")  # limiting magnitude
+    parser.add_argument("--sigmav", type=float, default=0.5, help="Standard deviation of the magnitude")  # standard deviation of the magnitude
+    parser.add_argument("--pmin", type=float, default=0.05, help="Minimum detection probability")  # minimum detection probability
 
-    parser.add_argument("-savefig", "--savefig", action="store_true", default=False)
-    parser.add_argument("-printtable", "--printtable", action="store_true", default=False)
+    parser.add_argument("--savefig", action="store_true", default=False, help="Save the plots as PNG files")  # save the plots as PNG files
+    parser.add_argument("--printtable", action="store_true", default=False, help="Print the complete table of results")  # print the complete table of results
 
     return parser
 
@@ -90,11 +91,11 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
         return
 
     # 4. Detection probability and survivors
-    add_detection_probability(table, info, args.vlim, args.sigma_v)
+    add_detection_probability(table, info, args.vlim, args.sigmav)
     survivors = np.asarray(table["P_det"], dtype=float) >= args.pmin
     n_surv = int(survivors.sum())
     print(f"{n_surv} of {len(table)} objects have P_det >= {args.pmin}"
-          f"(V_lim = {args.vlim}, sigma_V = {args.sigma_v})")
+          f"(V_lim = {args.vlim}, sigma_V = {args.sigmav})")
     print(f"Expected number of detections: {np.nansum(table['P_det']):.2f}")
 
     # table.sort("H",) # sort by H asc
