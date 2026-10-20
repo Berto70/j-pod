@@ -19,35 +19,8 @@ from plotting import plot_field
 from detection import add_detection_probability
 from output import save_table_csv
 
-# parsing command-line arguments
-parser = argparse.ArgumentParser()
-parser.add_argument("-d", "--dir", default="../data") # FITS directory
-parser.add_argument("-f", "--file", default="Null") # FITS file name
-parser.add_argument("-outdir", "--output_dir", default="../output") # output directory
-parser.add_argument("-o", "--observatory", default="I41") # observatory code 
-
-parser.add_argument("-vlim", "--vlim", type=float, default=21.5) # limiting magnitude
-parser.add_argument("-sigv", "--sigma_v", type=float, default=0.5) # uncertainty in magnitude
-parser.add_argument("-pmin", "--pmin", type=float, default=0.05) # minimum detection probability
-parser.add_argument("-savefig", "--savefig", action="store_true", default=False) # save figures
-parser.add_argument("-printtable", "--printtable", action="store_true", default=False) # print table to console
-
-args = parser.parse_args()
-
-FITS_DIR = Path(args.dir)
-FITS_FILE = FITS_DIR / args.file
-OUTPUT_DIR = Path(args.output_dir)
-OUTPUT_DIR_plots = OUTPUT_DIR / "plots"
-OUTPUT_DIR_tables = OUTPUT_DIR / "tables"
-OBSERVATORY_CODE = args.observatory # I41 for ZTF, 675 for Palomar, Z32 for OAJ
-
 MARGIN = 5 * u.arcmin    # widen the cone so ellipses of nearby objects are not missed
 MAGNIFY = 10             # ellipse magnification in the plot (1 = true size)
-V_LIM = args.vlim
-SIGMA_V = args.sigma_v
-P_MIN = args.pmin
-SAVE_FIGURES = args.savefig
-PRINT_TABLE = args.printtable
 
 OUTPUT_COLUMNS = [
     "Name", "RA", "DEC", "posunc", "V", "H",
@@ -57,7 +30,28 @@ OUTPUT_COLUMNS = [
 ]
 
 
-def pipeline(fits_file: str):
+def create_parser() -> argparse.ArgumentParser:
+    """Parsing CLI arguments."""
+
+    project_root = Path(__file__).resolve().parent.parent
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-d", "--dir", default=project_root / "data")  # FITS directory
+    parser.add_argument("-f", "--file", default="Null")  # FITS file name
+    parser.add_argument("-outdir", "--output_dir", default=project_root / "output")  # output directory
+
+    parser.add_argument("-o", "--observatory", default="I41")  # observatory code
+    parser.add_argument("-vlim", "--vlim", type=float, default=21.5)
+    parser.add_argument("-sigv", "--sigma_v", type=float, default=0.5)
+    parser.add_argument("-pmin", "--pmin", type=float, default=0.05)
+
+    parser.add_argument("-savefig", "--savefig", action="store_true", default=False)
+    parser.add_argument("-printtable", "--printtable", action="store_true", default=False)
+
+    return parser
+
+
+def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
 
     prefix = Path(fits_file).stem
     info = load_image(fits_file)
@@ -74,13 +68,13 @@ def pipeline(fits_file: str):
     field = SkyCoord(info.center.ra.deg * u.deg, info.center.dec.deg * u.deg, frame="icrs")
     radius = search_radius(info, MARGIN)
     print(f"Querying SkyBoT for asteroids in the image field in a radius of {radius}...")
-    table = query_skybot(field, radius, info.epoch, OBSERVATORY_CODE)
+    table = query_skybot(field, radius, info.epoch, args.observatory)
     if len(table) == 0:
         print("No asteroids found in this field of view.")
         return
 
     # 3. JPL data, ellipse orientation in the image, overlap filter
-    fetch_jpl_data(table, info.epoch, OBSERVATORY_CODE)
+    fetch_jpl_data(table, info.epoch, args.observatory)
 
     # Filter out objects with excessively large uncertainties (e.g. > 10 arcmin)
     max_uncertainty = 600 * u.arcsec 
@@ -96,12 +90,12 @@ def pipeline(fits_file: str):
         return
 
     # 4. Detection probability and survivors
-    add_detection_probability(table, info, V_LIM, SIGMA_V)
-    survivors = np.asarray(table["P_det"],dtype=float)>=P_MIN
+    add_detection_probability(table, info, args.vlim, args.sigma_v)
+    survivors = np.asarray(table["P_det"], dtype=float) >= args.pmin
     n_surv = int(survivors.sum())
-    print(f"{n_surv} of {len(table)} objects have P_det >= {P_MIN}"
-          f"(V_lim = {V_LIM}, sigma_V = {SIGMA_V})")
-    print(f"Expected number of detections: {np.nansum(table["P_det"]):.2f}")
+    print(f"{n_surv} of {len(table)} objects have P_det >= {args.pmin}"
+          f"(V_lim = {args.vlim}, sigma_V = {args.sigma_v})")
+    print(f"Expected number of detections: {np.nansum(table['P_det']):.2f}")
 
     # table.sort("H",) # sort by H asc
     table.sort("P_det", reverse=True) # sort by P_det desc
@@ -116,8 +110,8 @@ def pipeline(fits_file: str):
         magnify=MAGNIFY,
         show = False, 
         title =f"All objects overlapping the image (ellipses x{MAGNIFY})",
-        output_dir = OUTPUT_DIR_plots,
-        output_file=f"{prefix}_candidates.png" if SAVE_FIGURES else None,
+        output_dir=output_dir / "plots",
+        output_file=f"{prefix}_candidates.png" if args.savefig else None,
         )
     plot_field(
         info, 
@@ -127,35 +121,43 @@ def pipeline(fits_file: str):
         magnify=MAGNIFY, 
         show = False, 
         survivors=survivors, 
-        title = (f"Green: P_det >= {P_MIN} (V_lim ={V_LIM});"
+        title = (f"Green: P_det >= {args.pmin} (V_lim ={args.vlim});"
                 f"grey: below threshold (ellipses x{MAGNIFY})"),
-        output_dir= OUTPUT_DIR_plots,
-        output_file=f"{prefix}_survivors.png" if SAVE_FIGURES else None,    
+        output_dir=output_dir / "plots",
+        output_file=f"{prefix}_survivors.png" if args.savefig else None,
         )
     # plt.show()
 
     # 6. Table
     csv_file = f"{prefix}_results.csv"
-    save_table_csv(table, OUTPUT_DIR_tables, csv_file, OUTPUT_COLUMNS)
+    save_table_csv(table, output_dir / "tables", csv_file, OUTPUT_COLUMNS)
     print(f"\nTable saved to {csv_file}")
-    if PRINT_TABLE:
+    if args.printtable:
         print("\n--- Complete target results ---")
         table[OUTPUT_COLUMNS].pprint_all()
 
 def main():
 
+    args = create_parser().parse_args()
+
+    fits_dir = Path(args.dir)
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True) # create is not exist
+    (output_dir / "plots").mkdir(exist_ok=True) # create is not exist
+    (output_dir / "tables").mkdir(exist_ok=True)
+
     if args.file != "Null":
-        fits_files = [FITS_FILE]
+        fits_files = [fits_dir / args.file]
     else:
-        fits_files = sorted(FITS_DIR.glob("*.fits"))
+        fits_files = sorted(fits_dir.glob("*.fits"))
 
     if not fits_files:
-        print(f"No FITS files found in {FITS_DIR}")
+        print(f"No FITS files found in {fits_dir}")
         return
 
     for fits_file in fits_files:
         print(f"\nProcessing {fits_file}...")
-        pipeline(fits_file)
+        pipeline(fits_file, args, output_dir)
         print("")
 
 
