@@ -33,15 +33,19 @@ OUTPUT_COLUMNS = [
 def create_parser() -> argparse.ArgumentParser:
     """Parsing CLI arguments."""
 
-    project_root = Path(__file__).resolve().parent.parent
-    print(f"Project root: {project_root}")
+    # project_root = Path(__file__).resolve().parent.parent
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("-d", "--dir", default=project_root / "data", help="FITS files directory")  # FITS directory
-    parser.add_argument("-f", "--file", default="Null", help="FITS file name. Use if you want to process a single file")  # FITS file name
-    parser.add_argument("-outdir", "--output_dir", default=project_root / "output", help="Output directory")  # output directory
 
-    parser.add_argument("-obs", "--observatory", default="I41", help="Observatory code")  # observatory code
+    # working directory
+    parser.add_argument("-w", "--workdir", type=Path, default=None, help="Working directory. Defaults to the current folder")  # working directory
+
+    parser.add_argument("-d", "--dir", type=Path, default=None, help="FITS files directory")  # FITS directory
+    parser.add_argument("-f", "--file", type=Path, default=None, help="FITS file name with extension. Use if you want to process a single file." 
+                        +" Default parent directory is the data directory")  # FITS file name
+    parser.add_argument("-outdir", "--output_dir", type=Path, default=None, help="Output directory")  # output directory
+
+    parser.add_argument("-obs", "--observatory", type=str, default="I41", help="Observatory code")  # observatory code
     parser.add_argument("--vlim", type=float, default=21.5, help="Limiting magnitude of the image")  # limiting magnitude
     parser.add_argument("--sigmav", type=float, default=0.5, help="Standard deviation of the magnitude")  # standard deviation of the magnitude
     parser.add_argument("--pmin", type=float, default=0.05, help="Minimum detection probability")  # minimum detection probability
@@ -140,16 +144,16 @@ def main():
 
     args = create_parser().parse_args()
 
-    fits_dir = Path(args.dir)
-    output_dir = Path(args.output_dir)
+    workdir = args.workdir.resolve() if args.workdir else Path.cwd()
+
+    fits_dir = args.dir if args.dir else workdir / "data"
+    output_dir = args.output_dir if args.output_dir else workdir / "output"
+
     output_dir.mkdir(parents=True, exist_ok=True) # create is not exist
     (output_dir / "plots").mkdir(exist_ok=True) # create is not exist
     (output_dir / "tables").mkdir(exist_ok=True)
 
-    if args.file != "Null":
-        fits_files = [fits_dir / args.file]
-    else:
-        fits_files = sorted(fits_dir.glob("*.fits"))
+    fits_files = [fits_dir / args.file] if args.file else sorted(fits_dir.glob("*.fits"))
 
     if not fits_files:
         print(f"No FITS files found in {fits_dir}")
