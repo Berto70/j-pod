@@ -83,8 +83,8 @@ def query_skybot(field, radius, epoch, observatory_code):
         # they will be overwritten by JPL data in fetch_jpl_data
         # to ensure data consistency
         n = len(table)
-        table["RA_rate"] = np.full(n, np.nan) * (u.arcsec / u.hour)
-        table["DEC_rate"] = np.full(n, np.nan) * (u.arcsec / u.hour)
+        table["RA_rate"] = np.full(n, np.nan) * (u.arcsec / u.min)
+        table["DEC_rate"] = np.full(n, np.nan) * (u.arcsec / u.min)
         table["sky_speed"] = np.full(n, np.nan) * (u.arcsec / u.min)
 
     return table
@@ -199,17 +199,18 @@ def fetch_jpl_data(table, epoch, observatory_code):
             if jpl_data.get("DEC_JPL") is not None:
                 table["DEC"][i] = jpl_data["DEC_JPL"] * u.deg
             if jpl_data.get("V_JPL") is not None:
-                table["V"][i] = jpl_data["V_JPL"] * u.mag
+                table["V"][i] = jpl_data["V_JPL"] if table["V"].unit is None else jpl_data["V_JPL"] * u.mag
 
             # sky motion
+            # JPL returns arcsec/hour, but we want arcsec/min
             if jpl_data.get("RA_rate_JPL") is not None:
-                table["RA_rate"][i] = jpl_data["RA_rate_JPL"] * (u.arcsec / u.hour) # JPL return in arcsec/hour
+                table["RA_rate"][i] = (jpl_data["RA_rate_JPL"] * (u.arcsec / u.hour)).to(u.arcsec / u.min)
             if jpl_data.get("DEC_rate_JPL") is not None:
-                table["DEC_rate"][i] = jpl_data["DEC_rate_JPL"] * (u.arcsec / u.hour)
+                table["DEC_rate"][i] = (jpl_data["DEC_rate_JPL"] * (u.arcsec / u.hour)).to(u.arcsec / u.min) 
 
             # calc sky_speed
-            ra_r = u.Quantity(table["RA_rate"][i]).to(u.arcsec / u.min).value # we want arcsec/min
-            dec_r = u.Quantity(table["DEC_rate"][i]).to(u.arcsec / u.min).value
+            ra_r = u.Quantity(table["RA_rate"][i]).value
+            dec_r = u.Quantity(table["DEC_rate"][i]).value
             table["sky_speed"][i] = np.sqrt(ra_r**2 + dec_r**2) * (u.arcsec / u.min)
             
             print(f" [{i + 1}/{n}] {skybot_name} "
