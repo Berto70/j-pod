@@ -32,3 +32,10 @@ To use the pipeline you can proceed in two ways:
 
 **Note:** The default directory for the FITS files is `./data`. The default directory for the output files is `./output`; if `output`, it will be created automatically.
 
+### 6. Update the package
+Navigate to the project directory. Pull the new/updated files from the remote repository (be sure that you don't have pending edits). Install again the package to update the version.
+```bash
+cd \\directory\\path\j-pod
+git pull
+pip install -e .
+```
