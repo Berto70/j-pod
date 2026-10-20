@@ -137,7 +137,6 @@ def query_jpl_horizons(identifier, epoch, location):
         "RA_rate_JPL": jpl_ra_rate,
         "DEC_rate_JPL": jpl_dec_rate,
     }
-    return None
 
 
 JPL_COLUMNS = (
