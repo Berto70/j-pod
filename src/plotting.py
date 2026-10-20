@@ -72,7 +72,7 @@ def plot_field(info, table, angle_north, angle_east, magnify=1,
     ax.set_title(f"Uncertainty ellipses magnified x{magnify}")
     if output_file is not None:
         if output_dir is not None:
-            output_file = os.path.join(output_dir+"/plots", output_file)
+            output_file = os.path.join(output_dir, output_file)
         fig.savefig(output_file, dpi = 300, bbox_inches = "tight")
     if show:
         plt.show()
