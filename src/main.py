@@ -81,6 +81,14 @@ def pipeline(fits_file: str):
 
     # 3. JPL data, ellipse orientation in the image, overlap filter
     fetch_jpl_data(table, info.epoch, OBSERVATORY_CODE)
+
+    # Filter out objects with excessively large uncertainties (e.g. > 10 arcmin)
+    max_uncertainty = 600 * u.arcsec 
+    smaa = u.Quantity(table["SMAA_3sigma"])
+    threshold = (smaa < max_uncertainty) | np.isnan(smaa.value)
+    table = table[threshold]
+    print(f"\nFiltered out {np.sum(~threshold)} objects with excessively large uncertainties.")
+
     add_ellipse_image_angle(table, info.wcs)
     table = filter_in_image(table, info)
     print(f"\n{len(table)} objects overlap the image.")
