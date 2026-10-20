@@ -85,7 +85,7 @@ def query_skybot(field, radius, epoch, observatory_code):
         n = len(table)
         table["RA_rate"] = np.full(n, np.nan) * (u.arcsec / u.hour)
         table["DEC_rate"] = np.full(n, np.nan) * (u.arcsec / u.hour)
-        table["sky_speed"] = np.full(n, np.nan) * (u.arcsec / u.hour)
+        table["sky_speed"] = np.full(n, np.nan) * (u.arcsec / u.min)
 
     return table
 
