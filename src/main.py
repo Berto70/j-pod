@@ -1,8 +1,9 @@
 """Find the asteroids in a FITS image with SkyBoT and add JPL uncertainty ellipses."""
+import argparse
+from pathlib import Path
 
 import astropy.units as u
 from astropy.coordinates import SkyCoord
-from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -18,11 +19,18 @@ from plotting import plot_field
 from detection import add_detection_probability
 from output import save_table_csv
 
-from time import time
+# parsing command-line arguments
+parser = argparse.ArgumentParser()
+parser.add_argument("-d", "--dir", default="data")
+parser.add_argument("-f", "--file", default="Null")
+parser.add_argument("-o", "--observatory", default="I41")
 
-# ---------------------------------------------------------------- settings
-FITS_FILE = "ztf_20210820142419_000526_zr_c14_o_q3_scimrefdiffimg.fits"
-OBSERVATORY_CODE = "I41" # I41 for ZTF, 675 for Palomar
+args = parser.parse_args()
+
+FITS_DIR = Path(args.dir)
+FITS_FILE = FITS_DIR / args.file
+OBSERVATORY_CODE = args.observatory # I41 for ZTF, 675 for Palomar
+
 MARGIN = 5 * u.arcmin    # widen the cone so ellipses of nearby objects are not missed
 MAGNIFY = 10             # ellipse magnification in the plot (1 = true size)
 V_LIM = 15
@@ -30,7 +38,6 @@ SIGMA_V = 0.5
 P_MIN = 0.05
 SAVE_FIGURES = True
 PRINT_TABLE = False
-PREFIX = Path(FITS_FILE).stem
 
 OUTPUT_COLUMNS = [
     "Name", "RA", "DEC", "posunc", "V", "H",
@@ -40,16 +47,19 @@ OUTPUT_COLUMNS = [
 ]
 
 
-def main():
+def pipeline(fits_file: str):
+
+    prefix = Path(fits_file).stem
+    info = load_image(fits_file)
+
     # 1. Image and orientation
-    info = load_image(FITS_FILE)
     angle_north, angle_east, parity = image_orientation(info.wcs, info.center)
     print(
         f"At the image center: North points at {angle_north:.4f} deg, "
         f"East at {angle_east:.4f} deg (CCW from +x, 0 = right, 90 = up); "
         f"parity = {parity:+d}"
     )
-    time_in = time()
+
     # 2. SkyBoT cone search
     field = SkyCoord(info.center.ra.deg * u.deg, info.center.dec.deg * u.deg, frame="icrs")
     radius = search_radius(info, MARGIN)
@@ -58,10 +68,7 @@ def main():
     if len(table) == 0:
         print("No asteroids found in this field of view.")
         return
-    time_out = time()
-    print("SkyBot cone done", time_out-time_in)
 
-    time_in = time()
     # 3. JPL data, ellipse orientation in the image, overlap filter
     fetch_jpl_data(table, info.epoch, OBSERVATORY_CODE)
     add_ellipse_image_angle(table, info.wcs)
@@ -69,8 +76,6 @@ def main():
     print(f"\n{len(table)} objects overlap the image.")
     if len(table) == 0:
         return
-    time_out = time()
-    print("JPL data done", time_out-time_in)
 
     # 4. Detection probability and survivors
     add_detection_probability(table, info, V_LIM, SIGMA_V)
@@ -90,7 +95,7 @@ def main():
         magnify=MAGNIFY,
         show = False, 
         title =f"All objects overlapping the image (ellipses x{MAGNIFY})", 
-        output_file=f"{PREFIX}_candidates.png" if SAVE_FIGURES else None,
+        output_file=f"{prefix}_candidates.png" if SAVE_FIGURES else None,
         )
     plot_field(
         info, 
@@ -102,17 +107,33 @@ def main():
         survivors=survivors, 
         title = (f"Green: P_det >= {P_MIN} (V_lim ={V_LIM});"
                 f"grey: below threshold (ellipses x{MAGNIFY})"),
-        output_file=f"{PREFIX}_survivors.png" if SAVE_FIGURES else None,    
+        output_file=f"{prefix}_survivors.png" if SAVE_FIGURES else None,    
         )
     plt.show()
 
     # 6. Table
-    csv_file = f"{PREFIX}_results.csv"
+    csv_file = f"{prefix}_results.csv"
     save_table_csv(table, csv_file, OUTPUT_COLUMNS)
     print(f"\nTable saved to {csv_file}")
     if PRINT_TABLE:
         print("\n--- Complete target results ---")
         table[OUTPUT_COLUMNS].pprint_all()
+
+def main():
+
+    if args.file != "Null":
+        fits_files = [FITS_FILE]
+    else:
+        fits_files = sorted(FITS_DIR.glob("*.fits"))
+
+    if not fits_files:
+        print(f"No FITS files found in {FITS_DIR}")
+        return
+
+    for fits_file in fits_files:
+        print(f"\nProcessing {fits_file}...")
+        pipeline(fits_file)
+        print("")
 
 
 if __name__ == "__main__":
