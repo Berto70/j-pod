@@ -39,7 +39,14 @@ def load_image(fits_file: str)-> ImageInfo:
         np.array([0, 0, ny - 1, ny - 1]),
         w,
     )
-    epoch = Time(header["OBSJD"], format="jd", scale="utc")
+
+    if "DATE-OBS" in header:
+        epoch = Time(header["DATE-OBS"], format="isot", scale="utc")
+    elif "OBSJD" in header:
+        epoch = Time(header["OBSJD"], format="jd", scale="utc")
+    else: 
+        raise ValueError("No observation date column found.")
+
     scale = proj_plane_pixel_scales(w.celestial)[0] * 3600
 
     return ImageInfo(data, w, nx, ny, center, corners, epoch, scale)
