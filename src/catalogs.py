@@ -83,9 +83,9 @@ def query_skybot(field, radius, epoch, observatory_code):
         # they will be overwritten by JPL data in fetch_jpl_data
         # to ensure data consistency
         n = len(table)
-        table["RA_rate"] = np.full(n, np.nan) * (u.arcsec / u.min)
-        table["DEC_rate"] = np.full(n, np.nan) * (u.arcsec / u.min)
-        table["sky_speed"] = np.full(n, np.nan) * (u.arcsec / u.min)
+        table["RA_rate"] = np.full(n, np.nan) * (u.arcsec / u.hour)
+        table["DEC_rate"] = np.full(n, np.nan) * (u.arcsec / u.hour)
+        table["sky_speed"] = np.full(n, np.nan) * (u.arcsec / u.hour)
 
     return table
 
@@ -115,12 +115,16 @@ def query_jpl_horizons(identifier, epoch, location):
     jpl_ra = _table_value(ephemeris, "RA", u.deg)
     jpl_dec = _table_value(ephemeris, "DEC", u.deg)
 
-    # check wheter it's V or mag --> remove if thre's no ambiguity
+    # fetch sky motion from JPL
+    jpl_ra_rate = _table_value(ephemeris, "RA_rate", u.arcsec / u.hour)
+    jpl_dec_rate = _table_value(ephemeris, "DEC_rate", u.arcsec / u.hour)
+
+    # check whether it's V or mag --> remove if there's no ambiguity
     jpl_v = _table_value(ephemeris, "V", u.mag)
     if jpl_v is None:
         jpl_v = _table_value(ephemeris, "mag", u.mag)
 
-    if h_value < 16.5:
+    if h_value is not None and h_value < 16.5:
         return {
             "H": h_value,
             "SMAA_3sigma": major,
@@ -129,6 +133,8 @@ def query_jpl_horizons(identifier, epoch, location):
             "RA_JPL": jpl_ra,
             "DEC_JPL": jpl_dec,
             "V_JPL": jpl_v,
+            "RA_rate_JPL": jpl_ra_rate,
+            "DEC_rate_JPL": jpl_dec_rate,
         }
     return None
 
@@ -162,7 +168,7 @@ def fetch_jpl_data(table, epoch, observatory_code):
     for name, unit in JPL_COLUMNS:
         table[name] = np.full(n, np.nan) * unit
 
-    print(f"\nFound {n} objects. Fetching H, astrometru and uncertainty ellipses from JPL Horizons...")
+    print(f"\nFound {n} objects. Fetching H, astrometry and uncertainty ellipses from JPL Horizons...")
 
     cache = {}
     for i in range(n):
