@@ -21,9 +21,9 @@ from output import save_table_csv
 
 # parsing command-line arguments
 parser = argparse.ArgumentParser()
-parser.add_argument("-d", "--dir", default="data") # FITS directory
+parser.add_argument("-d", "--dir", default="../data") # FITS directory
 parser.add_argument("-f", "--file", default="Null") # FITS file name
-parser.add_argument("-outdir", "--output_dir", default="output") # output directory
+parser.add_argument("-outdir", "--output_dir", default="../output") # output directory
 parser.add_argument("-o", "--observatory", default="I41") # observatory code 
 
 args = parser.parse_args()
@@ -31,7 +31,9 @@ args = parser.parse_args()
 FITS_DIR = Path(args.dir)
 FITS_FILE = FITS_DIR / args.file
 OUTPUT_DIR = Path(args.output_dir)
-OBSERVATORY_CODE = args.observatory # I41 for ZTF, 675 for Palomar
+OUTPUT_DIR_plots = OUTPUT_DIR / "plots"
+OUTPUT_DIR_tables = OUTPUT_DIR / "tables"
+OBSERVATORY_CODE = args.observatory # I41 for ZTF, 675 for Palomar, Z32 for OAJ
 
 MARGIN = 5 * u.arcmin    # widen the cone so ellipses of nearby objects are not missed
 MAGNIFY = 10             # ellipse magnification in the plot (1 = true size)
@@ -97,7 +99,7 @@ def pipeline(fits_file: str):
         magnify=MAGNIFY,
         show = False, 
         title =f"All objects overlapping the image (ellipses x{MAGNIFY})",
-        output_dir = OUTPUT_DIR,
+        output_dir = OUTPUT_DIR_plots,
         output_file=f"{prefix}_candidates.png" if SAVE_FIGURES else None,
         )
     plot_field(
@@ -110,14 +112,14 @@ def pipeline(fits_file: str):
         survivors=survivors, 
         title = (f"Green: P_det >= {P_MIN} (V_lim ={V_LIM});"
                 f"grey: below threshold (ellipses x{MAGNIFY})"),
-        output_dir= OUTPUT_DIR,
+        output_dir= OUTPUT_DIR_plots,
         output_file=f"{prefix}_survivors.png" if SAVE_FIGURES else None,    
         )
     # plt.show()
 
     # 6. Table
     csv_file = f"{prefix}_results.csv"
-    save_table_csv(table, OUTPUT_DIR, csv_file, OUTPUT_COLUMNS)
+    save_table_csv(table, OUTPUT_DIR_tables, csv_file, OUTPUT_COLUMNS)
     print(f"\nTable saved to {csv_file}")
     if PRINT_TABLE:
         print("\n--- Complete target results ---")
