@@ -70,30 +70,6 @@ def _table_value(table, column, unit=None):
 
     return result if np.isfinite(result) else None
 
-
-def add_sky_motion(table):
-    """Add standardized motion components and total angular speed."""
-    # astroquery versions use either RA_rate or RAcosD_rate for the first
-    # component. SkyBoT's value already includes cos(DEC), so the two
-    # components can be combined directly on the tangent plane.
-    if "RA_rate" in table.colnames:
-        ra_rate_name = "RA_rate"
-    elif "RAcosD_rate" in table.colnames:
-        ra_rate_name = "RAcosD_rate"
-    else:
-        raise KeyError("SkyBoT result has no RA motion-rate column")
-
-    if "DEC_rate" not in table.colnames:
-        raise KeyError("SkyBoT result has no DEC motion-rate column")
-
-    ra_rate = u.Quantity(table[ra_rate_name]).to(u.arcsec / u.min)
-    dec_rate = u.Quantity(table["DEC_rate"]).to(u.arcsec / u.min)
-
-    table["RA_rate"] = ra_rate
-    table["DEC_rate"] = dec_rate
-    table["sky_speed"] = np.sqrt(ra_rate**2 + dec_rate**2).to(u.arcsec / u.min)
-
-
 # ---------------------------------------------------------------- SkyBoT
 
 def query_skybot(field, radius, epoch, observatory_code):
@@ -101,8 +77,16 @@ def query_skybot(field, radius, epoch, observatory_code):
     (motion columns and 'posunc' in arcsec)."""
     table = Skybot.cone_search(field, radius, epoch, location=observatory_code)
     if len(table) > 0:
-        add_sky_motion(table)
         table["posunc"] = u.Quantity(table["posunc"]).to(u.arcsec)
+
+        # initialize motion columns with NaNs. 
+        # they will be overwritten by JPL data in fetch_jpl_data
+        # to ensure data consistency
+        n = len(table)
+        table["RA_rate"] = np.full(n, np.nan) * (u.arcsec / u.min)
+        table["DEC_rate"] = np.full(n, np.nan) * (u.arcsec / u.min)
+        table["sky_speed"] = np.full(n, np.nan) * (u.arcsec / u.min)
+
     return table
 
 
@@ -125,6 +109,16 @@ def query_jpl_horizons(identifier, epoch, location):
     # Horizons Theta is measured from increasing RA toward increasing DEC.
     # Convert it to the usual astronomical position angle: east of north.
     lov_pa = None if theta is None else (90.0 - theta) % 180.0
+    
+    # fetch astrometry and apparent mag from JPL
+    # ensures consistency with the uncertainty ellipse
+    jpl_ra = _table_value(ephemeris, "RA", u.deg)
+    jpl_dec = _table_value(ephemeris, "DEC", u.deg)
+
+    # check wheter it's V or mag --> remove if thre's no ambiguity
+    jpl_v = _table_value(ephemeris, "V", u.mag)
+    if jpl_v is None:
+        jpl_v = _table_value(ephemeris, "mag", u.mag)
 
     if h_value < 16.5:
         return {
@@ -132,6 +126,9 @@ def query_jpl_horizons(identifier, epoch, location):
             "SMAA_3sigma": major,
             "SMIA_3sigma": minor,
             "LOV_PA": lov_pa,
+            "RA_JPL": jpl_ra,
+            "DEC_JPL": jpl_dec,
+            "V_JPL": jpl_v,
         }
     return None
 
@@ -165,7 +162,7 @@ def fetch_jpl_data(table, epoch, observatory_code):
     for name, unit in JPL_COLUMNS:
         table[name] = np.full(n, np.nan) * unit
 
-    print(f"\nFound {n} objects. Fetching H and uncertainty ellipses from JPL Horizons...")
+    print(f"\nFound {n} objects. Fetching H, astrometru and uncertainty ellipses from JPL Horizons...")
 
     cache = {}
     for i in range(n):
@@ -185,9 +182,30 @@ def fetch_jpl_data(table, epoch, observatory_code):
                 last_error = exc
 
         if jpl_data is not None:
+            # uncertainty and H
             for name, unit in JPL_COLUMNS:
                 if jpl_data[name] is not None:
                     table[name][i] = jpl_data[name] * unit
+
+            # jpl astrometry and apparent mag
+            if jpl_data.get("RA_JPL") is not None:
+                table["RA"][i] = jpl_data["RA_JPL"] * u.deg
+            if jpl_data.get("DEC_JPL") is not None:
+                table["DEC"][i] = jpl_data["DEC_JPL"] * u.deg
+            if jpl_data.get("V_JPL") is not None:
+                table["V"][i] = jpl_data["V_JPL"] * u.mag
+
+            # sky motion
+            if jpl_data.get("RA_rate_JPL") is not None:
+                table["RA_rate"][i] = jpl_data["RA_rate_JPL"] * (u.arcsec / u.hour) # JPL return in arcsec/hour
+            if jpl_data.get("DEC_rate_JPL") is not None:
+                table["DEC_rate"][i] = jpl_data["DEC_rate_JPL"] * (u.arcsec / u.hour)
+
+            # calc sky_speed
+            ra_r = u.Quantity(table["RA_rate"][i]).to(u.arcsec / u.min).value # we want arcsec/min
+            dec_r = u.Quantity(table["DEC_rate"][i]).to(u.arcsec / u.min).value
+            table["sky_speed"][i] = np.sqrt(ra_r**2 + dec_r**2) * (u.arcsec / u.min)
+            
             print(f" [{i + 1}/{n}] {skybot_name} "
                   f"(JPL identifier {matched_identifier}): {_describe(jpl_data)}")
         elif last_error is not None:
