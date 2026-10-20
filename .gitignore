@@ -5,3 +5,5 @@
 .data
 .data/*.fits
 .data/*.fz
+data/J*
+data/j02*
