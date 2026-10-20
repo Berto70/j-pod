@@ -100,7 +100,6 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
     # table.sort("H",) # sort by H asc
     table.sort("P_det", reverse=True) # sort by P_det desc
 
-
     # 5. Plots
     plot_field(
         info,
@@ -159,7 +158,6 @@ def main():
         print(f"\nProcessing {fits_file}...")
         pipeline(fits_file, args, output_dir)
         print("")
-
 
 if __name__ == "__main__":
     main()
