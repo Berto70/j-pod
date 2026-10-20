@@ -95,6 +95,9 @@ def pipeline(fits_file: str):
           f"(V_lim = {V_LIM}, sigma_V = {SIGMA_V})")
     print(f"Expected number of detections: {np.nansum(table["P_det"]):.2f}")
 
+    # table.sort("H",) # sort by H asc
+    table.sort("P_det", reverse=True) # sort by P_det desc
+
 
     # 5. Plots
     plot_field(
