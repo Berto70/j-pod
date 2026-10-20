@@ -30,6 +30,21 @@ OUTPUT_COLUMNS = [
     "P_pos", "P_mag", "P_det",
 ]
 
+def resolve_path(path, workdir, default_subdir=None):
+    """
+    Resolves path:
+    - If path is absolute, it is used as-is.
+    - If path is relative, it is joined with the working directory.
+    - If path is None, it defaults to workdir / default_subdir.
+    """
+    if path is None:
+        return (workdir / default_subdir).resolve() if default_subdir else workdir.resolve()
+    
+    p = Path(path)
+    if p.is_absolute():
+        return p.resolve()
+    else:
+        return (workdir / p).resolve()
 
 def create_parser() -> argparse.ArgumentParser:
     """Parsing CLI arguments."""
@@ -61,7 +76,6 @@ def create_parser() -> argparse.ArgumentParser:
     )
 
     return parser
-
 
 def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
 
@@ -153,8 +167,8 @@ def main():
 
     workdir = args.workdir.resolve() if args.workdir else Path.cwd()
 
-    fits_dir = args.dir if args.dir else workdir / "data"
-    output_dir = args.output_dir if args.output_dir else workdir / "output"
+    fits_dir = resolve_path(args.dir, workdir, default_subdir="data")
+    output_dir = resolve_path(args.output_dir, workdir, default_subdir="output")
 
     output_dir.mkdir(parents=True, exist_ok=True) # create is not exist
     (output_dir / "plots").mkdir(exist_ok=True) # create is not exist
