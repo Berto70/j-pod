@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "j-pod"
+version = "0.2.0"
+description = "Find asteroids in FITS images with SkyBoT and JPL uncertainty ellipses."
+requires-python = ">=3.8"
+
+dependencies = [
+    "astropy",
+    "numpy",
+    "matplotlib",
+    "astroquery",
+]
+
+[project.scripts]
+# maps j-pod to main() in jpod. So can use j-pod from CLI
+j-pod = "jpod.main:main"
