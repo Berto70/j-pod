@@ -1,1 +1,7 @@
 .vscode/settings.json
+.output
+.output/plots
+.output/tables
+.data
+.data/*.fits
+.data/*.fz
