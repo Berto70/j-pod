@@ -26,6 +26,12 @@ parser.add_argument("-f", "--file", default="Null") # FITS file name
 parser.add_argument("-outdir", "--output_dir", default="../output") # output directory
 parser.add_argument("-o", "--observatory", default="I41") # observatory code 
 
+parser.add_argument("-vlim", "--vlim", type=float, default=21.5) # limiting magnitude
+parser.add_argument("-sigv", "--sigma_v", type=float, default=0.5) # uncertainty in magnitude
+parser.add_argument("-pmin", "--pmin", type=float, default=0.05) # minimum detection probability
+parser.add_argument("-savefig", "--savefig", action="store_true", default=False) # save figures
+parser.add_argument("-printtable", "--printtable", action="store_true", default=False) # print table to console
+
 args = parser.parse_args()
 
 FITS_DIR = Path(args.dir)
@@ -37,11 +43,11 @@ OBSERVATORY_CODE = args.observatory # I41 for ZTF, 675 for Palomar, Z32 for OAJ
 
 MARGIN = 5 * u.arcmin    # widen the cone so ellipses of nearby objects are not missed
 MAGNIFY = 10             # ellipse magnification in the plot (1 = true size)
-V_LIM = 15
-SIGMA_V = 0.5
-P_MIN = 0.05
-SAVE_FIGURES = True
-PRINT_TABLE = False
+V_LIM = args.vlim
+SIGMA_V = args.sigma_v
+P_MIN = args.pmin
+SAVE_FIGURES = args.savefig
+PRINT_TABLE = args.printtable
 
 OUTPUT_COLUMNS = [
     "Name", "RA", "DEC", "posunc", "V", "H",
