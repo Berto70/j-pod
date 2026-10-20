@@ -7,6 +7,7 @@ from astropy.coordinates import SkyCoord
 import numpy as np
 import matplotlib.pyplot as plt
 
+from . import __version__
 from .catalogs import fetch_jpl_data, query_skybot
 from .image_geometry import (
     add_ellipse_image_angle,
@@ -52,6 +53,12 @@ def create_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--savefig", action="store_true", default=False, help="Save the plots as PNG files")  # save the plots as PNG files
     parser.add_argument("--printtable", action="store_true", default=False, help="Print the complete table of results")  # print the complete table of results
+
+    parser.add_argument(
+        "-V", "--version", 
+        action="version", 
+        version=f"%(prog)s {__version__}", help="Show the version of the program and exit"
+    )
 
     return parser
 
