@@ -35,7 +35,7 @@ To use the pipeline you can proceed in two ways:
 ### 6. Update the package
 Navigate to the project directory. Pull the new/updated files from the remote repository (be sure that you don't have pending edits). Install again the package to update the version.
 ```bash
-cd \\directory\\path\j-pod
+cd \\root\\path\j-pod
 git pull
 pip install -e .
 ```
