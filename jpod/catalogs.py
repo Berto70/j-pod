@@ -124,8 +124,6 @@ def query_jpl_horizons(identifier, epoch, location):
     if jpl_v is None:
         jpl_v = _table_value(ephemeris, "mag", u.mag)
 
-    # if h_value is not None and h_value < 16.5:
-    # JPL can calc pos, vel, ellipse without H
     return {
         "H": h_value,
         "SMAA_3sigma": major,

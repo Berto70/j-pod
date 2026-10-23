@@ -122,7 +122,6 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
           f"(V_lim = {args.vlim}, sigma_V = {args.sigmav})")
     print(f"Expected number of detections: {np.nansum(table['P_det']):.2f}")
 
-    # table.sort("H",) # sort by H asc
     table.sort("P_det", reverse=True) # sort by P_det desc
 
     # 5. Plots
@@ -150,7 +149,6 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
         output_dir=output_dir / "plots",
         output_file=f"{prefix}_survivors.png" if args.savefig else None,
         )
-    # plt.show()
 
     # 6. Table
     csv_file = f"{prefix}_results.csv"
