@@ -53,21 +53,20 @@ def create_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser()
 
-    # working directory
-    parser.add_argument("-w", "--workdir", type=Path, default=None, help="Working directory. Defaults to the current folder")  # working directory
+    parser.add_argument("-w", "--workdir", type=Path, default=None, help="Working directory. Defaults to the current folder")
 
-    parser.add_argument("-d", "--dir", type=Path, default=None, help="FITS files directory")  # FITS directory
+    parser.add_argument("-d", "--dir", type=Path, default=None, help="FITS files directory")
     parser.add_argument("-f", "--file", type=Path, default=None, help="FITS file name with extension. Use if you want to process a single file." 
-                        +" Default parent directory is the data directory")  # FITS file name
-    parser.add_argument("-outdir", "--output_dir", type=Path, default=None, help="Output directory")  # output directory
+                        +" Default parent directory is the data directory")
+    parser.add_argument("-outdir", "--output_dir", type=Path, default=None, help="Output directory")
 
-    parser.add_argument("-obs", "--observatory", type=str, default="I41", help="Observatory code")  # observatory code
-    parser.add_argument("--vlim", type=float, default=21.5, help="Limiting magnitude of the image")  # limiting magnitude
-    parser.add_argument("--sigmav", type=float, default=0.5, help="Standard deviation of the magnitude")  # standard deviation of the magnitude
-    parser.add_argument("--pmin", type=float, default=0.05, help="Minimum detection probability")  # minimum detection probability
+    parser.add_argument("-obs", "--observatory", type=str, default="I41", help="Observatory code")
+    parser.add_argument("--vlim", type=float, default=21.5, help="Limiting magnitude of the image")
+    parser.add_argument("--sigmav", type=float, default=0.5, help="Standard deviation of the magnitude")
+    parser.add_argument("--pmin", type=float, default=0.05, help="Minimum detection probability")
 
-    parser.add_argument("--savefig", action="store_true", default=False, help="Save the plots as PNG files")  # save the plots as PNG files
-    parser.add_argument("--printtable", action="store_true", default=False, help="Print the complete table of results")  # print the complete table of results
+    parser.add_argument("--savefig", action="store_true", default=False, help="Save the plots as PNG files")
+    parser.add_argument("--printtable", action="store_true", default=False, help="Print the complete table of results")
 
     parser.add_argument(
         "-V", "--version", 
