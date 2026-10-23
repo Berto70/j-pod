@@ -30,12 +30,12 @@ To use the pipeline you can proceed in two ways:
 1. Move to your project/working directory and run the command from there. The package will use the current directory as root directory for the `data` and `output` directories.
 2. You can run the code wherever you want. Just remember to specify the project/working directory using `-w`/`--workdir` argument. For the other directories, just specify the relative path.
 
-**Note:** The default directory for the FITS files is `./data`. The default directory for the output files is `./output`; if `output`, it will be created automatically.
+**Note:** The default directory for the FITS files is `./data`. The default directory for the output files is `./output`; if `output` doesn't exist, it will be created automatically.
 
 ### 6. Update the package
 Navigate to the project directory. Pull the new/updated files from the remote repository (be sure that you don't have pending edits). Install again the package to update the version.
 ```bash
-cd \\root\\path\j-pod
+cd root_path\j-pod
 git pull
 pip install -e .
 ```
