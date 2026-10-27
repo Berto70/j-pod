@@ -342,7 +342,7 @@ def query_skybot(field, radius, epoch, observatory_code, timeout=120):
             err_dec = _to_float_or_nan(row[col_err_dec])
             posunc = np.hypot(err_ra, err_dec)
         else:
-            posunc = np.nan
+            posunc = 1.0 # default to 1 arcsec if the API doesn't provide an error estimate
 
         names.append(name)
         # A leading number outside parentheses is the (provisional-)number part
