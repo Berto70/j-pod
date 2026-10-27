@@ -14,6 +14,7 @@ dependencies = [
     "matplotlib",
     "astroquery",
     "scipy",
+    "requests",
 ]
 
 [project.scripts]
