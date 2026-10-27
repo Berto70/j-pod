@@ -1,4 +1,11 @@
-"""Queries to SkyBoT (IMCCE) and JPL Horizons, and table preparation."""
+"""Queries to the JPL APIs (SB Identification + Horizons), and table preparation.
+
+The SkyBoT (IMCCE) service is unavailable, so ``query_skybot()`` is now a
+drop-in replacement based on the NASA/JPL Small-Body Identification API
+(https://ssd-api.jpl.nasa.gov/sb_ident.api).  It returns a QTable with the
+same column names and units the rest of the pipeline expects from SkyBoT:
+Name, Number, RA, DEC, posunc, V, RA_rate, DEC_rate, sky_speed.
+"""
 
 import re
 import requests
@@ -6,11 +13,10 @@ import time
 
 import astropy.units as u
 import numpy as np
-from astroquery.imcce import Skybot
 from astroquery.jplhorizons import Horizons
 
 from astropy.coordinates import SkyCoord, Angle
-from astropy.table import Table, QTable
+from astropy.table import QTable
 
 
 # ---------------------------------------------------------------- helpers
@@ -75,28 +81,21 @@ def _table_value(table, column, unit=None):
 
     return result if np.isfinite(result) else None
 
-# ---------------------------------------------------------------- SkyBoT
-
-# def query_skybot(field, radius, epoch, observatory_code):
-#     """Cone search in SkyBoT. If anything is found, standardize the table
-#     (motion columns and 'posunc' in arcsec)."""
-#     table = Skybot.cone_search(field, radius, epoch, location=observatory_code)
-#     if len(table) > 0:
-#         table["posunc"] = u.Quantity(table["posunc"]).to(u.arcsec)
-
-#         # initialize motion columns with NaNs. 
-#         # they will be overwritten by JPL data in fetch_jpl_data
-#         # to ensure data consistency
-#         n = len(table)
-#         table["RA_rate"] = np.full(n, np.nan) * (u.arcsec / u.min)
-#         table["DEC_rate"] = np.full(n, np.nan) * (u.arcsec / u.min)
-#         table["sky_speed"] = np.full(n, np.nan) * (u.arcsec / u.min)
-
-#     return table
-
 # ---------------------------------------------------------------- JPL asteroid identification
+#
+# Drop-in replacement for the (currently unavailable) SkyBoT cone search.
 
 JPL_SB_IDENT_URL = "https://ssd-api.jpl.nasa.gov/sb_ident.api"
+
+SKYBOT_COLUMNS = (
+    ("RA", u.deg),
+    ("DEC", u.deg),
+    ("posunc", u.arcsec),
+    ("V", u.mag),
+    ("RA_rate", u.arcsec / u.min),
+    ("DEC_rate", u.arcsec / u.min),
+    ("sky_speed", u.arcsec / u.min),
+)
 
 
 def _jpl_ra_string(ra_deg):
@@ -112,8 +111,12 @@ def _jpl_ra_string(ra_deg):
 
 
 def _jpl_dec_string(dec_deg):
-    """Format declination as dd-mm-ss.ss, using M for negative values."""
-    value = Angle(
+    """Format declination as [s]dd-mm-ss.ss for the JPL SB Identification API.
+
+    The API wants the sign first and '-' as the digit separator; it accepts
+    both '-dd-mm-ss.ss' and '+dd-mm-ss.ss' (verified against the live service).
+    """
+    return Angle(
         dec_deg, unit=u.deg
     ).to_string(
         unit=u.deg,
@@ -123,149 +126,268 @@ def _jpl_dec_string(dec_deg):
         pad=True,
     )
 
-    if value.startswith("-"):
-        value = "M" + value[1:]
 
-    return value
+def _jpl_parse_dec(value):
+    """Parse a JPL declination string into decimal degrees, or None.
 
-
-def _jpl_dec_to_colon(value):
-    """Convert a JPL declination such as +10 28'34.3" to +10:28:34.3."""
-    return (
-        str(value)
-        .replace("'", ":")
-        .replace('"', "")
-        .replace(" ", ":")
-    )
-
-
-def query_skybot(
-    field,
-    radius,
-    epoch,
-    observatory_code,
-    timeout=120,
-):
+    Accepted forms include "+10 28'34.3\"", "-16 41'45\"" and "M16-41-45";
+    the leading sign (or the JPL 'M' = South marker) gives the hemisphere.
     """
-    Find asteroids in a circular cone using the JPL SB Identification API.
-    Returns a QTable with strict unit enforcement to match J-POD's expectations.
+    text = str(value).strip().replace(",", ".")  # e.g. '-16 41'45,'
+    match = re.match(r"^([+-]|[MSms]?)(\d{1,2})(?:\D+(\d{1,2}))?(?:\D+([\d.]+))?\D*$", text)
+    if match is None:
+        return None
+
+    sign, degrees, minutes, seconds = match.groups()
+    try:
+        result = float(degrees)
+        if minutes:
+            result += float(minutes) / 60.0
+        if seconds:
+            result += float(seconds) / 3600.0
+    except ValueError:
+        return None
+
+    if sign in {"-", "M", "m"}:
+        result = -result
+    if not -90.0 <= result <= 90.0:
+        return None
+    return result
+
+
+def _jpl_parse_ra(value):
+    """Parse a JPL right-ascension string into hours, or None.
+
+    Accepts separators between the components to be robust against format
+    variations ('11:59:10', '11-59-10.00', '11 59 10.0').
     """
-    if not field.isscalar:
-        raise ValueError("field must contain a single SkyCoord")
+    text = str(value).strip().replace(",", ".")
+    match = re.match(r"^(\d{1,2})\D+(\d{1,2})(?:\D+([\d.]+))?\D*$", text)
+    if match is None:
+        return None
 
-    radius_deg = u.Quantity(radius).to_value(u.deg)
-    if not 0 < radius_deg <= 180:
-        raise ValueError("radius must be between 0 and 180 degrees")
+    hours, minutes, seconds = match.groups()
+    try:
+        result = float(hours) + float(minutes) / 60.0
+        if seconds:
+            result += float(seconds) / 3600.0
+    except ValueError:
+        return None
 
-    ra_deg = field.icrs.ra.deg
-    dec_deg = field.icrs.dec.deg
+    if not 0.0 <= result < 24.0:
+        return None
+    return result
 
-    cos_dec = abs(np.cos(np.deg2rad(dec_deg)))
-    ra_half_width = 180.0 if cos_dec < 1e-10 else min(radius_deg / cos_dec, 180.0)
-    epoch_string = epoch.utc.to_datetime().strftime("%Y-%m-%d_%H:%M:%S")
 
-    params = {
-        "sb-kind": "a",
-        "mpc-code": str(observatory_code),
-        "obs-time": epoch_string,
-        "fov-ra-center": _jpl_ra_string(ra_deg),
-        "fov-dec-center": _jpl_dec_string(dec_deg),
-        "fov-ra-hwidth": ra_half_width,
-        "fov-dec-hwidth": radius_deg,
-        "two-pass": "true",
-        "suppress-first-pass": "true",
-        "req-elem": "false",
-        "mag-required": "false",
-    }
+def _to_float_or_nan(value):
+    """Best-effort conversion of an API cell to a finite float, else NaN."""
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return np.nan
+    return result if np.isfinite(result) else np.nan
 
+
+def _empty_skybot_table():
+    """An empty table with the SkyBoT column names and units."""
+    table = QTable()
+    table["Name"] = np.array([], dtype="U")
+    table["Number"] = np.array([], dtype="U")
+    for name, unit in SKYBOT_COLUMNS:
+        table[name] = np.array([], dtype=float) * unit
+    return table
+
+
+def _fetch_sb_ident(params, timeout):
+    """Query the JPL SB Identification API with retries; return the payload.
+
+    HTTP 400/404 are not retried: they mean a malformed request (or an empty
+    result), and the caller decides what to do with them.
+    """
     session = requests.Session()
     session.headers.update({"User-Agent": "J-POD/1.0 (asteroid observation pipeline)"})
     max_attempts = 3
 
     for attempt in range(max_attempts):
         try:
-            response = session.get(JPL_SB_IDENT_URL, params=params, timeout=(15, 300))
+            response = session.post(JPL_SB_IDENT_URL, data=params, timeout=timeout)
             response.raise_for_status()
-            payload = response.json()
-            break
+            return response.json()
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
             if attempt == max_attempts - 1:
-                raise RuntimeError(f"JPL asteroid identification failed after {max_attempts} attempts.") from exc
+                raise RuntimeError(
+                    f"JPL asteroid identification failed after {max_attempts} attempts."
+                ) from exc
             time.sleep(2 ** (attempt + 1))
         except requests.exceptions.HTTPError as exc:
-            if response.status_code not in (429, 500, 502, 503, 504) or attempt == max_attempts - 1:
+            # The API reports "no objects found" as HTTP 400 Code=7.
+            if exc.response.status_code == 400 and '"Code":"7"' in exc.response.text:
+                return {}
+            retryable = exc.response.status_code in (429, 500, 502, 503, 504)
+            if not retryable or attempt == max_attempts - 1:
                 raise
             time.sleep(2 ** (attempt + 1))
-    else:
-        raise RuntimeError("JPL SB_IDENT failed without returning a response")
 
-    if payload.get("code") or payload.get("error"):
-        raise RuntimeError(f"JPL asteroid search failed: {payload.get('message', payload.get('error', payload.get('code')))}")
+    raise RuntimeError("unreachable state in the JPL SB_IDENT retry loop")
+
+
+def query_skybot(field, radius, epoch, observatory_code, timeout=120):
+    """Find Solar-system objects in a circular cone, mimicking SkyBot.cone_search.
+
+    Because the IMCCE SkyBoT service is unavailable, this uses the NASA/JPL
+    Small-Body Identification API instead: it queries the bounding box of the
+    cone (two-pass mode, first pass suppressed) and then keeps only the
+    objects whose true angular separation from ``field`` is within ``radius``.
+
+    Parameters (same as the old SkyBoT version):
+    - ``field``: scalar SkyCoord, the center of the cone.
+    - ``radius``: angular radius of the cone (any angular Quantity).
+    - ``epoch``: astropy Time of the observation.
+    - ``observatory_code``: MPC observatory code, e.g. "I41".
+
+    Returns a QTable with the SkyBoT column names and units:
+    Name, Number (strings), RA, DEC (deg), posunc (arcsec), V (mag),
+    RA_rate, DEC_rate, sky_speed (arcsec/min).  The motion columns are NaN:
+    they are filled with consistent JPL Horizons values later, in
+    ``fetch_jpl_data()``.  ``posunc`` is the quadrature sum of the API's
+    estimated RA/Dec errors when available, otherwise NaN.
+    """
+    if not field.isscalar:
+        raise ValueError("field must contain a single SkyCoord")
+
+    radius = u.Quantity(radius).to(u.deg)
+    radius_deg = radius.value
+    if not 0 < radius_deg <= 180:
+        raise ValueError("radius must be between 0 and 180 degrees")
+
+    center = field.icrs
+    ra_deg = float(center.ra.wrap_at(360 * u.deg).deg)
+    dec_deg = float(center.dec.deg)
+
+    # Bounding box of the cone.  The extra arcminutes on the RA half-width
+    # compensate for the cos(dec) convergence at the edges of the box.
+    cos_dec = max(abs(np.cos(np.deg2rad(dec_deg))), 1e-6)
+    ra_half_width = min(radius_deg / cos_dec + 2.0 * (1.0 / 60.0), 180.0)
+
+    epoch_string = epoch.utc.to_datetime().strftime("%Y-%m-%d_%H:%M:%S")
+
+    params = {
+        "sb-kind": "a",   # SB_IDENT only accepts 'a' or 'c'; asteroids match
+                          # the main use of the old SkyBoT cone search here,
+                          # and comets are still resolved via JPL Horizons in
+                          # fetch_jpl_data() when an object is cross-matched.
+        "mpc-code": str(observatory_code),
+        "obs-time": epoch_string,
+        "fov-ra-center": _jpl_ra_string(ra_deg),
+        "fov-dec-center": _jpl_dec_string(dec_deg),
+        "fov-ra-hwidth": f"{ra_half_width:.4f}",
+        "fov-dec-hwidth": f"{radius_deg:.4f}",
+        "two-pass": "true",
+        "suppress-first-pass": "true",
+        "req-elem": "false",
+        "mag-required": "false",
+    }
+
+    payload = _fetch_sb_ident(params, timeout)
+
+    if payload.get("error") or payload.get("code"):
+        message = payload.get("message") or payload.get("error") or payload.get("code")
+        raise RuntimeError(f"JPL asteroid identification failed: {message}")
 
     signature = payload.get("signature", {})
-    if signature.get("source") != "NASA/JPL Small-Body Identification API":
-        raise RuntimeError(f"Unexpected JPL API response: {signature}")
+    source = signature.get("source", "") if isinstance(signature, dict) else str(signature)
+    if "Small-Body Identification" not in source:
+        raise RuntimeError(f"Unexpected JPL API response signature: {signature!r}")
 
-    rows = payload.get("data_second_pass", [])
-    columns = payload.get("fields_second", [])
+    fields = payload.get("fields_second") or payload.get("fields_first") or []
+    rows = payload.get("data_second_pass")
+    if rows is None:
+        rows = payload.get("data_first_pass", [])
 
-    # CRITICAL FIX: Return a QTable with explicit units, even if empty
     if not rows:
-        table = QTable()
-        table["Name"] = np.array([], dtype=str)
-        table["Number"] = np.array([], dtype=str)
-        table["RA"] = np.array([], dtype=float) * u.deg
-        table["DEC"] = np.array([], dtype=float) * u.deg
-        table["posunc"] = np.array([], dtype=float) * u.arcsec
-        table["V"] = np.array([], dtype=float) * u.mag
-        table["RA_rate"] = np.array([], dtype=float) * (u.arcsec / u.min)
-        table["DEC_rate"] = np.array([], dtype=float) * (u.arcsec / u.min)
-        table["sky_speed"] = np.array([], dtype=float) * (u.arcsec / u.min)
-        return table
+        print("JPL SB_IDENT found no objects in this field.")
+        return _empty_skybot_table()
 
-    raw = QTable(rows=rows, names=columns)
-    ra_col, dec_col, name_col, mag_col = "Astrometric RA (hh:mm:ss)", 'Astrometric Dec (dd mm\'ss")', "Object name", "Visual magnitude (V)"
+    index = {name: i for i, name in enumerate(fields)}
 
-    for required in (ra_col, dec_col, name_col):
-        if required not in raw.colnames:
-            raise RuntimeError(f"Expected column {required!r} missing from JPL response.")
+    def find_column(*fragments):
+        """Return the index of the first field containing all fragments."""
+        for name, position in index.items():
+            lowered = name.lower()
+            if all(fragment.lower() in lowered for fragment in fragments):
+                return position
+        return None
 
-    ra_strings = [str(value) for value in raw[ra_col]]
-    dec_strings = [_jpl_dec_to_colon(value) for value in raw[dec_col]]
-    coordinates = SkyCoord(ra=ra_strings, dec=dec_strings, unit=(u.hourangle, u.deg), frame="icrs")
+    col_name = find_column("object name")
+    col_ra = find_column("astrometric ra")
+    col_dec = find_column("astrometric dec")
+    if col_name is None or col_ra is None or col_dec is None:
+        raise RuntimeError(f"Unexpected JPL SB_IDENT columns: {fields}")
 
-    names = [str(value).strip() for value in raw[name_col]]
-    numbers = [re.match(r"^\s*(\d+)(?:\s|$)", name).group(1) if re.match(r"^\s*(\d+)(?:\s|$)", name) else "" for name in names]
+    col_mag = find_column("visual magnitude")
+    col_err_ra = find_column("est. error ra")
+    col_err_dec = find_column("est. error dec")
 
-    # CRITICAL FIX: Use QTable and explicitly attach units to every column
+    names, numbers, ra_values, dec_values, mag_values, posunc_values = [], [], [], [], [], []
+    for row in rows:
+        name = str(row[col_name]).strip()
+        ra_hours = _jpl_parse_ra(row[col_ra])
+        dec_deg_row = _jpl_parse_dec(row[col_dec])
+        if not name or ra_hours is None or dec_deg_row is None:
+            continue
+
+        magnitude = _to_float_or_nan(row[col_mag]) if col_mag is not None else np.nan
+        if col_err_ra is not None and col_err_dec is not None:
+            err_ra = _to_float_or_nan(row[col_err_ra])
+            err_dec = _to_float_or_nan(row[col_err_dec])
+            posunc = np.hypot(err_ra, err_dec)
+        else:
+            posunc = np.nan
+
+        names.append(name)
+        # A leading number outside parentheses is the (provisional-)number part
+        # of the designation, e.g. "1301 Yvonne (1934 EA)" -> 1301; parenthesized
+        # designations like "(2020 KP17)" have no catalogue number.
+        match = re.match(r"^(\d+)\s", name)
+        numbers.append(match.group(1) if match else "")
+        ra_values.append(ra_hours)
+        dec_values.append(dec_deg_row)
+        mag_values.append(magnitude)
+        posunc_values.append(posunc)
+
+    if not names:
+        print("JPL SB_IDENT returned no usable positions in this field.")
+        return _empty_skybot_table()
+
+    coordinates = SkyCoord(ra=ra_values * u.hourangle,
+                           dec=dec_values * u.deg,
+                           frame="icrs")
+
+    # The API searches a rectangular box; reduce the result to the true cone.
+    inside = center.separation(coordinates) <= radius
+    coordinates = coordinates[inside]
+    names = [n for n, k in zip(names, inside) if k]
+    numbers = [n for n, k in zip(numbers, inside) if k]
+    mag_values = [m for m, k in zip(mag_values, inside) if k]
+    posunc_values = [p for p, k in zip(posunc_values, inside) if k]
+
     table = QTable()
     table["Name"] = names
     table["Number"] = numbers
-    table["RA"] = coordinates.ra.deg * u.deg       # Explicitly degrees
-    table["DEC"] = coordinates.dec.deg * u.deg     # Explicitly degrees
-    table["posunc"] = np.full(len(table), np.nan) * u.arcsec
+    table["RA"] = coordinates.ra.to(u.deg)
+    table["DEC"] = coordinates.dec.to(u.deg)
+    table["posunc"] = np.asarray(posunc_values, dtype=float) * u.arcsec
+    table["V"] = np.asarray(mag_values, dtype=float) * u.mag
 
-    if mag_col in raw.colnames:
-        magnitudes = []
-        for value in raw[mag_col]:
-            try:
-                mag = float(value)
-                magnitudes.append(mag if np.isfinite(mag) else np.nan)
-            except (TypeError, ValueError):
-                magnitudes.append(np.nan)
-        table["V"] = np.asarray(magnitudes, dtype=float) * u.mag
-    else:
-        table["V"] = np.full(len(table), np.nan) * u.mag
-
-    separation = field.icrs.separation(coordinates)
-    table = table[separation <= radius]
-
+    # Motion columns start as NaNs; they are overwritten by JPL Horizons data
+    # in fetch_jpl_data() to ensure data consistency across the pipeline.
     n = len(table)
     table["RA_rate"] = np.full(n, np.nan) * (u.arcsec / u.min)
     table["DEC_rate"] = np.full(n, np.nan) * (u.arcsec / u.min)
     table["sky_speed"] = np.full(n, np.nan) * (u.arcsec / u.min)
 
-    print(f"JPL SB_IDENT returned {len(table)} asteroids inside a {radius.to(u.arcmin):.2f} cone.")
+    print(f"JPL SB_IDENT returned {n} asteroids inside a "
+          f"{u.Quantity(radius).to(u.arcmin):.2f} cone.")
     return table
 
 
@@ -288,7 +410,7 @@ def query_jpl_horizons(identifier, epoch, location):
     # Horizons Theta is measured from increasing RA toward increasing DEC.
     # Convert it to the usual astronomical position angle: east of north.
     lov_pa = None if theta is None else (90.0 - theta) % 180.0
-    
+
     # fetch astrometry and apparent mag from JPL
     # ensures consistency with the uncertainty ellipse
     jpl_ra = _table_value(ephemeris, "RA", u.deg)
@@ -339,30 +461,33 @@ def _describe(jpl_data):
     return f"H = {h_text}; {ellipse_text}"
 
 def fetch_jpl_data(table, epoch, observatory_code):
-    """Add H, SMAA_3sigma, SMIA_3sigma and LOV_PA columns, filled from JPL."""
-    # 1. GUARANTEE QTable to prevent Astropy from stripping units
+    """Add H, SMAA_3sigma, SMIA_3sigma and LOV_PA columns, filled from JPL.
+
+    Also refreshes RA, DEC, V, RA_rate, DEC_rate and sky_speed with the
+    Horizons ephemeris of each object, so that all astrometry in the table
+    is consistent with the uncertainty ellipse.  Every column keeps its
+    unit; values are always written as Quantity objects (or through the
+    raw ndarray view), never as bare floats into a unit-ed column.
+    """
     if not isinstance(table, QTable):
         table = QTable(table)
 
     n = len(table)
-    
-    # 2. Enforce units on core columns (patching any dimensionless leftovers)
-    for name in ("RA", "DEC"):
-        if table[name].unit is None:
-            table[name] = table[name] * u.deg
+
+    # Guarantee units on every column this function touches, so later
+    # assignments and downstream code (plotting, detection, CSV) see
+    # proper Quantities instead of dimensionless arrays.
+    for name, unit in SKYBOT_COLUMNS:
+        if name not in table.colnames:
+            table[name] = np.full(n, np.nan) * unit
+        elif table[name].unit is None:
+            # A unit-less column (e.g. rebuilt from a CSV without units) is
+            # interpreted as being already expressed in the expected unit.
+            table[name] = table[name].data.view(np.ndarray).astype(float) * unit
         else:
-            table[name] = table[name].to(u.deg)
-            
-    if "V" in table.colnames and table["V"].unit is None:
-        table["V"] = table["V"] * u.mag
-    elif "V" not in table.colnames:
-        table["V"] = np.full(n, np.nan) * u.mag
+            table[name] = table[name].to(unit)
 
-    for name in ("RA_rate", "DEC_rate", "sky_speed"):
-        if name in table.colnames and table[name].unit is None:
-            table[name] = table[name] * (u.arcsec / u.min)
-
-    # 3. Initialize JPL columns with explicit units
+    # Initialize the JPL columns with explicit units.
     for name, unit in JPL_COLUMNS:
         table[name] = np.full(n, np.nan) * unit
 
@@ -370,7 +495,7 @@ def fetch_jpl_data(table, epoch, observatory_code):
 
     cache = {}
     for i in range(n):
-        skybot_name = str(table["Name"][i]).strip()
+        catalog_name = str(table["Name"][i]).strip()
         matched_identifier = None
         jpl_data = None
         last_error = None
@@ -386,40 +511,40 @@ def fetch_jpl_data(table, epoch, observatory_code):
                 last_error = exc
 
         if jpl_data is not None:
-            # 4. SAFE ASSIGNMENT: Assign raw float values, NOT Quantities
+            # query_jpl_horizons returns plain floats already expressed in the
+            # units below; attach the unit explicitly when writing into the
+            # (unit-ed) columns, which is what Quantity.__setitem__ requires.
             for name, unit in JPL_COLUMNS:
                 value = jpl_data[name]
                 if value is not None:
-                    if isinstance(value, u.Quantity):
-                        value = value.to_value(unit)
-                    table[name][i] = value  # Astropy safely maps the float to the column's unit
+                    table[name][i] = float(value) * unit
 
-            # JPL astrometry and apparent mag (assign raw floats)
+            # JPL astrometry and apparent magnitude (consistency with the ellipse)
             if jpl_data.get("RA_JPL") is not None:
-                table["RA"][i] = float(jpl_data["RA_JPL"])
+                table["RA"][i] = float(jpl_data["RA_JPL"]) * u.deg
             if jpl_data.get("DEC_JPL") is not None:
-                table["DEC"][i] = float(jpl_data["DEC_JPL"])
+                table["DEC"][i] = float(jpl_data["DEC_JPL"]) * u.deg
             if jpl_data.get("V_JPL") is not None:
-                # CRITICAL FIX: Assign the raw float, NOT the Quantity
-                table["V"][i] = float(jpl_data["V_JPL"])
+                table["V"][i] = float(jpl_data["V_JPL"]) * u.mag
 
-            # Sky motion: JPL returns arcsec/hour, we want arcsec/min
+            # Sky motion: JPL returns arcsec/hour, we store arcsec/min
+            ra_rate = dec_rate = None
             if jpl_data.get("RA_rate_JPL") is not None:
-                val = (float(jpl_data["RA_rate_JPL"]) * (u.arcsec / u.hour)).to_value(u.arcsec / u.min)
-                table["RA_rate"][i] = val
+                ra_rate = (float(jpl_data["RA_rate_JPL"]) * (u.arcsec / u.hour)).to_value(u.arcsec / u.min)
+                table["RA_rate"][i] = ra_rate * (u.arcsec / u.min)
             if jpl_data.get("DEC_rate_JPL") is not None:
-                val = (float(jpl_data["DEC_rate_JPL"]) * (u.arcsec / u.hour)).to_value(u.arcsec / u.min)
-                table["DEC_rate"][i] = val
+                dec_rate = (float(jpl_data["DEC_rate_JPL"]) * (u.arcsec / u.hour)).to_value(u.arcsec / u.min)
+                table["DEC_rate"][i] = dec_rate * (u.arcsec / u.min)
+            if ra_rate is not None and dec_rate is not None:
+                speed = np.hypot(ra_rate, dec_rate)
+                table["sky_speed"][i] = speed * (u.arcsec / u.min)
 
-            # Calc sky_speed
-            ra_r = float(table["RA_rate"][i])
-            dec_r = float(table["DEC_rate"][i])
-            table["sky_speed"][i] = np.sqrt(ra_r**2 + dec_r**2)
-
-            print(f" [{i + 1}/{n}] {skybot_name} "
+            print(f" [{i + 1}/{n}] {catalog_name} "
                   f"(JPL identifier {matched_identifier}): {_describe(jpl_data)}")
         elif last_error is not None:
-            print(f" [{i + 1}/{n}] {skybot_name}: JPL query failed ({last_error})")
+            print(f" [{i + 1}/{n}] {catalog_name}: JPL query failed ({last_error})")
         else:
-            print(f" [{i + 1}/{n}] {skybot_name}: "
+            print(f" [{i + 1}/{n}] {catalog_name}: "
                   "no usable identifier was available for the JPL query")
+
+    return table
