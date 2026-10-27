@@ -24,7 +24,7 @@ from .detection import add_detection_probability
 from .output import save_table_csv
 
 MARGIN = 5 * u.arcmin    # widen the cone so ellipses of nearby objects are not missed
-MAGNIFY = 10             # ellipse magnification in the plot (1 = true size)
+MAGNIFY = 500             # ellipse magnification in the plot (1 = true size)
 
 OUTPUT_COLUMNS = [
     "Name", "RA", "DEC", "posunc", "V", "H",
@@ -186,12 +186,12 @@ def main():
         print(f"\nProcessing {fits_file}...")
         pipeline(fits_file, args, output_dir)
         print("")
-        
+
     if args.clear_cache:
-        print("\nClearing cache for SkyBoT, Horizons and MPC...")
-        Skybot.cache.clear()
-        Horizons.cache.clear()
-        MPC.cache.clear()
+        print("Clearing cache for SkyBoT, Horizons and MPC...")
+        Skybot.clear_cache()
+        Horizons.clear_cache()
+        MPC.clear_cache()
         print("Cache cleared.")
 
 if __name__ == "__main__":
