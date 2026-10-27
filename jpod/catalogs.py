@@ -99,7 +99,7 @@ def query_jpl_horizons(identifier, epoch, location):
         id_type="smallbody",
         location=location,
         epochs=float(epoch.jd),
-    ).ephemerides()
+    ).ephemerides(quantities="1,3,9,36,37,47") # query only quantities we need
 
     h_value = _table_value(ephemeris, "H", u.mag)
     major = _table_value(ephemeris, "SMAA_3sigma", u.arcsec)
