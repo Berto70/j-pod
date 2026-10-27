@@ -38,13 +38,39 @@ def position_probability(mu, cov, nx, ny, eps=1e-8):
 
 
 def magnitude_probability(v, v_lim, sigma_v=0.5):
-    """P(V_true <= V_lim) for V_true ~ N(v, sigma_v^2). NaN if v is NaN."""
-    return norm.cdf((v_lim - v) / sigma_v)
+    """P(V_true <= V_lim) for V_true ~ N(v, sigma_v^2). NaN if v is NaN.
+
+    All arguments are reduced to plain floats in magnitudes before the
+    subtraction, so passing a Quantity (``21.5 * u.mag``), a dimensionless
+    or unit-ed table column never raises a UnitConversionError.
+    """
+    v = _mag_array(v)
+    v_lim = _mag_float(v_lim)
+    sigma_v = _mag_float(sigma_v)
+    with np.errstate(invalid="ignore"):
+        return norm.cdf((v_lim - v) / sigma_v)
 
 
 def _plain(column):
-    """Column -> float array, with masked values replaced by NaN."""
-    return np.ma.filled(np.ma.asarray(column, dtype=float), np.nan)
+    """Column -> float ndarray (units stripped), masked values -> NaN."""
+    values = column
+    unit = getattr(values, "unit", None)
+    if unit is not None:                       # Quantity / SkyCoord-like
+        values = values.to_value(unit)         # plain numbers in that unit
+    arr = np.ma.asarray(values, dtype=float)   # no copy, keeps the mask
+    return np.ma.filled(arr, np.nan).view(np.ndarray)
+
+
+def _mag_array(value):
+    """Any magnitude input -> plain float ndarray (NaN for missing)."""
+    return np.atleast_1d(_plain(value)).astype(float, copy=False)
+
+
+def _mag_float(value):
+    """Scalar magnitude (float or Quantity in mag) -> plain float."""
+    if isinstance(value, u.Quantity):
+        return value.to_value(u.mag)
+    return float(value)
 
 
 def add_detection_probability(table, info, v_lim, sigma_v=0.5,
@@ -77,7 +103,7 @@ def add_detection_probability(table, info, v_lim, sigma_v=0.5,
             cov = r**2 * np.eye(2)
         p_pos[i] = position_probability((x[i], y[i]), cov, info.nx, info.ny)
 
-    p_mag = magnitude_probability(_plain(table["V"]), v_lim, sigma_v)
+    p_mag = magnitude_probability(table["V"], v_lim, sigma_v)
 
     table["P_pos"] = p_pos
     table["P_mag"] = p_mag
