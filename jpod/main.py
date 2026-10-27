@@ -5,7 +5,10 @@ from pathlib import Path
 import astropy.units as u
 from astropy.coordinates import SkyCoord
 import numpy as np
-import matplotlib.pyplot as plt
+
+from astroquery.jplhorizons import Horizons
+from astroquery.mpc import MPC
+from astroquery.imcce import Skybot
 
 from . import __version__
 from .catalogs import fetch_jpl_data, query_skybot
@@ -67,6 +70,8 @@ def create_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--savefig", action="store_true", default=False, help="Save the plots as PNG files")
     parser.add_argument("--printtable", action="store_true", default=False, help="Print the complete table of results")
+
+    parser.add_argument("--clear-cache", action="store_true", default=False, help="Clear the cache of SkyBoT, Horizons and MPC data before running")
 
     parser.add_argument(
         "-V", "--version", 
@@ -181,6 +186,13 @@ def main():
         print(f"\nProcessing {fits_file}...")
         pipeline(fits_file, args, output_dir)
         print("")
+        
+    if args.clear_cache:
+        print("\nClearing cache for SkyBoT, Horizons and MPC...")
+        Skybot.cache.clear()
+        Horizons.cache.clear()
+        MPC.cache.clear()
+        print("Cache cleared.")
 
 if __name__ == "__main__":
     main()
