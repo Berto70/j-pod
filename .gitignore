@@ -1,8 +1,11 @@
 .vscode/settings.json
+.DS_Store
+jpod/.DS_Store
+output/.DS_Store
 .output
 .output/plots
 .output/tables
-.data
+.data/
 .data/*.fits
 .data/*.fz
 data/J*
