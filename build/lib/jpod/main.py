@@ -1,0 +1,218 @@
+"""Find the asteroids in a FITS image with MPChecker (previously SkyBoT) and add JPL uncertainty ellipses."""
+import argparse
+from pathlib import Path
+
+import astropy.units as u
+from astropy.coordinates import SkyCoord
+import numpy as np
+import matplotlib.pyplot as plt
+
+from . import __version__
+from .catalogs import fetch_jpl_data, query_skybot
+from .skybot_alternative import query_mpc_identification
+from .image_geometry import (
+    add_ellipse_image_angle,
+    filter_in_image,
+    image_orientation,
+    load_image,
+    describe_time,
+    search_radius,
+    compute_trail_length,
+)
+from .plotting import plot_field, plot_cutouts
+from .detection import add_detection_probability
+from .output import save_table_csv
+from .config import MARGIN, OUTPUT_COLUMNS, OBSCODES_JSON, ZOOM_HALF_SIZE
+
+MAGNIFY = 10             # ellipse magnification in the plot (1 = true size)
+MOTION_SCALE = 10
+ZOOM_OBJECTS = []
+
+
+DATE_OBS = None         # None: read it from the header, or force it
+TIME_REFERENCE = None   # what DATE-OBS (or similar keywords) means: "start", "mid" or "end" of the exposure
+
+
+def resolve_path(path, workdir, default_subdir=None):
+    """
+    Resolves path:
+    - If path is absolute, it is used as-is.
+    - If path is relative, it is joined with the working directory.
+    - If path is None, it defaults to workdir / default_subdir.
+    """
+    if path is None:
+        return (workdir / default_subdir).resolve() if default_subdir else workdir.resolve()
+    
+    p = Path(path)
+    if p.is_absolute():
+        return p.resolve()
+    else:
+        return (workdir / p).resolve()
+
+def create_parser() -> argparse.ArgumentParser:
+    """Parsing CLI arguments."""
+
+    # project_root = Path(__file__).resolve().parent.parent
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("-w", "--workdir", type=Path, default=None, help="Working directory. Defaults to the current folder")
+
+    parser.add_argument("-d", "--dir", type=Path, default=None, help="FITS files directory")
+    parser.add_argument("-f", "--file", type=Path, default=None, help="FITS file name with extension. Use if you want to process a single file." 
+                        +" Default parent directory is the data directory")
+    parser.add_argument("-outdir", "--output_dir", type=Path, default=None, help="Output directory")
+
+    parser.add_argument("-obs", "--observatory", type=str, default=None, help="Observatory code")
+    parser.add_argument("--vlim", type=float, default=21.5, help="Limiting magnitude of the image")
+    parser.add_argument("--sigmav", type=float, default=0.5, help="Standard deviation of the magnitude")
+    parser.add_argument("--pmin", type=float, default=0.05, help="Minimum detection probability")
+
+    parser.add_argument("--savefig", action="store_true", default=False, help="Save the plots as PNG files")
+    parser.add_argument("--printtable", action="store_true", default=False, help="Print the complete table of results")
+
+    parser.add_argument(
+        "-V", "--version", 
+        action="version", 
+        version=f"%(prog)s {__version__}", help="Show the version of the program and exit"
+    )
+
+    return parser
+
+def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
+
+    prefix = Path(fits_file).stem
+    info = load_image(fits_file, args.observatory, TIME_REFERENCE, DATE_OBS, OBSCODES_JSON)
+
+    # 1. Image and orientation
+    print(f"\nObservatory code: {info.observatory_code} ({info.obs_code_source})\n")
+    print()
+    for line in describe_time(info):
+        print(line)
+    print()
+    angle_north, angle_east, parity = image_orientation(info.wcs, info.center)
+    print(
+        f"At the image center: North points at {angle_north:.4f} deg, "
+        f"East at {angle_east:.4f} deg (CCW from +x, 0 = right, 90 = up); "
+        f"parity = {parity:+d}"
+    )
+
+    # 2. MPC search
+    # ----- Previous SkyBoT search -----
+    #field = SkyCoord(info.center.ra.deg * u.deg, info.center.dec.deg * u.deg, frame="icrs")
+    #radius = search_radius(info, MARGIN)
+    #print(f"Querying SkyBoT for asteroids in the image field in a radius of {radius}...")
+    #table = query_skybot(field, radius, info.start_obs, info.observatory_code)
+    radius = search_radius(info, MARGIN)
+    print(f"Querying MPC MPChecker for asteroids in the image field in a radius of {radius}...", flush=True)
+    table = query_mpc_identification(info, radius)
+    if len(table) == 0:
+        print("No asteroids found in this field of view.")
+        return
+
+    # 3. JPL data, ellipse orientation in the image, overlap filter
+    fetch_jpl_data(table, info.start_obs, info.end_obs, info.observatory_code)
+    add_ellipse_image_angle(table, info.wcs)
+    table = filter_in_image(table, info)
+    compute_trail_length(info, table)
+    print(f"\n{len(table)} objects overlap the image.")
+    if len(table) == 0:
+        return
+
+    # Filter out objects with excessively large uncertainties (e.g. > 10 arcmin)
+    #max_uncertainty = 600 * u.arcsec 
+    #smaa = u.Quantity(table["SMAA_3sigma"])
+    #threshold = (smaa < max_uncertainty) | np.isnan(smaa.value)
+    #table = table[threshold]
+    #print(f"\nFiltered out {np.sum(~threshold)} objects with excessively large uncertainties.")
+
+    # 4. Detection probability and survivors
+    add_detection_probability(table, info, args.vlim, args.sigmav)
+    survivors = np.asarray(table["P_det"], dtype=float) >= args.pmin
+    table["detectable"] = survivors
+    n_surv = int(survivors.sum())
+    print(f"{n_surv} of {len(table)} objects have P_det >= {args.pmin}"
+          f"(V_lim = {args.vlim}, sigma_V = {args.sigmav})")
+    print(f"Expected number of detections: {np.nansum(table['P_det']):.2f}")
+    table.sort("P_det", reverse=True) # sort by P_det desc
+
+
+    # 5. Plots
+    plot_field(
+        info,
+        table, 
+        angle_north,
+        angle_east, 
+        magnify=MAGNIFY,
+        object_class="NEA",
+        survivors=None,
+        show=False,
+        title = None,
+        output_dir=output_dir / "plots",
+        output_file=f"{prefix}_candidates.png" if args.savefig else None,
+        V_lim=args.vlim,
+        P_min=args.pmin
+        )
+    plot_field(
+        info, 
+        table, 
+        angle_north, 
+        angle_east, 
+        magnify=MAGNIFY, 
+        object_class=None,
+        survivors=survivors, 
+        show=False,
+        title = None,
+        output_dir=output_dir / "plots",
+        output_file=f"{prefix}_survivors.png" if args.savefig else None,
+        V_lim=args.vlim,
+        P_min=args.pmin
+        )
+    if ZOOM_OBJECTS:
+        plot_cutouts(
+            info, 
+            table, 
+            ZOOM_OBJECTS, 
+            ZOOM_HALF_SIZE, 
+            magnify=MAGNIFY, 
+            motion_scale = MOTION_SCALE, 
+            output_dir = output_dir / "plots",
+            output_file=f"{prefix}_zoom.png" if args.savefig else None,
+            show=False 
+            )   
+    plt.show()
+
+    # 6. Table
+    csv_file = f"{prefix}_results.csv"
+    save_table_csv(table, output_dir / "tables", csv_file, OUTPUT_COLUMNS)
+    print(f"\nTable saved to {csv_file}")
+    if args.printtable:
+        print("\n--- Complete target results ---")
+        table[OUTPUT_COLUMNS].pprint_all()
+
+def main():
+
+    args = create_parser().parse_args()
+
+    workdir = args.workdir.resolve() if args.workdir else Path.cwd()
+
+    fits_dir = resolve_path(args.dir, workdir, default_subdir="data")
+    output_dir = resolve_path(args.output_dir, workdir, default_subdir="output")
+
+    output_dir.mkdir(parents=True, exist_ok=True) # create is not exist
+    (output_dir / "plots").mkdir(exist_ok=True) # create is not exist
+    (output_dir / "tables").mkdir(exist_ok=True)
+
+    fits_files = [fits_dir / args.file] if args.file else sorted(fits_dir.glob("*.fits"))
+
+    if not fits_files:
+        print(f"No FITS files found in {fits_dir}")
+        return
+
+    for fits_file in fits_files:
+        print(f"\nProcessing {fits_file}...")
+        pipeline(fits_file, args, output_dir)
+        print("")
+
+if __name__ == "__main__":
+    main()

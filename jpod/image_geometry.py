@@ -9,7 +9,8 @@ from astropy.io import fits
 from astropy.time import Time
 from astropy.wcs import WCS
 from astropy.wcs.utils import proj_plane_pixel_scales
-
+from .fits_header.fits_header import get_obs_times, get_observatory_code
+from .fits_header.obscodes import load_obscodes_safe
 
 @dataclass
 class ImageInfo:
@@ -20,12 +21,23 @@ class ImageInfo:
     ny: int
     center: SkyCoord          # sky position of the image center
     corners: SkyCoord         # sky positions of the 4 corners
-    epoch: Time               # observation time
     pixel_scale: float        # arcsec/pixel (square pixels assumed)
+    observatory_code: str     # MPC observatory code
+    obs_code_source: str      # where the code was found
+    date_obs: Time            # time written in the header
+    start_obs: Time           # start of the exposure (UTC)
+    end_obs: Time             # end of the exposure (UTC)
+    exptime: object           # exposure time (Quantity) or None
+    time_source: str          # where the time was found
 
 
-def load_image(fits_file: str)-> ImageInfo:
-    """Read the FITS file and return an ImageInfo."""
+def load_image(fits_file: str, observatory_code = None, time_reference = None, date_obs = None, obscodes_json = None)-> ImageInfo:
+    """Read the FITS file and return an ImageInfo.
+    observatory_code : force the MPC code; if None it is taken from the header or, failing that, from the MPC list (obscodes_json)
+    time_reference : None (automatic) or 'start', 'mid', 'end' to force what the time in the header means
+    obscodes_json: path of the MPC JSON list of observatory codes
+    date_obs: force the observation time (UTC string); if None it is taken from the header
+    """
     with fits.open(fits_file) as hdul:
         header = hdul[0].header
         data = hdul[0].data.copy()
@@ -39,17 +51,21 @@ def load_image(fits_file: str)-> ImageInfo:
         np.array([0, 0, ny - 1, ny - 1]),
         w,
     )
-
-    if "DATE-OBS" in header:
-        epoch = Time(header["DATE-OBS"], format="isot", scale="utc")
-    elif "OBSJD" in header:
-        epoch = Time(header["OBSJD"], format="jd", scale="utc")
-    else: 
-        raise ValueError("No observation date column found.")
+    obscodes = load_obscodes_safe(obscodes_json)
+    code, code_source = get_observatory_code(header, observatory_code, obscodes)
+    date_obs, start_obs, end_obs, exptime, time_source = get_obs_times(header, time_reference, date_obs)
 
     scale = proj_plane_pixel_scales(w.celestial)[0] * 3600
 
-    return ImageInfo(data, w, nx, ny, center, corners, epoch, scale)
+    return ImageInfo(data, w, nx, ny, center, corners, scale,
+                     code, code_source, date_obs, start_obs, end_obs, exptime, time_source)
+
+def describe_time(info: ImageInfo)->list:
+    """Lines describing the observation time, for the terminal."""
+    lines = [f"Time in header: {info.date_obs.isot} UTC ({info.time_source})"]
+    if info.exptime is not None:
+        lines.append(f"Exposure: {info.exptime:.1f}, from {info.start_obs.isot} to {info.end_obs.isot} UTC.")
+    return lines
 
 
 def search_radius(info: ImageInfo, margin=0 * u.arcmin):
@@ -133,26 +149,57 @@ def ellipse_overlaps_image(x, y, a, b, angle_deg, nx, ny, n_samples=720)-> bool:
 
 def filter_in_image(table, info: ImageInfo):
     """Keep objects whose position or uncertainty ellipse overlaps the image.
-    Adds the columns 'x_pix' and 'y_pix' (pixel position of each object)"""
+    Adds the columns 'x_pix' and 'y_pix' (pixel position of each object at the start of the exposure)
+    and 'x_pix_end', 'y_pix_end'. Without the columns RA_end, DEC_end the two positions are the same.
+    """
     nx, ny, scale = info.nx, info.ny, info.pixel_scale
-
-    coords = SkyCoord(u.Quantity(table["RA"]).to(u.deg),
-                      u.Quantity(table["DEC"]).to(u.deg), frame="icrs")
-    x, y = info.wcs.world_to_pixel(coords)
+    def to_pixel(ra_name, dec_name):
+        coords = SkyCoord(u.Quantity(table[ra_name]).to(u.deg),
+                          u.Quantity(table[dec_name]).to(u.deg), frame = "icrs")
+        return info.wcs.world_to_pixel(coords)
+    
+    x, y = to_pixel("RA", "DEC")
+    if "RA_end" in table.colnames:
+        x_end, y_end = to_pixel("RA_end", "DEC_end")
+    else:
+        x_end, y_end = x, y
 
     a = u.Quantity(table["SMAA_3sigma"]).to_value(u.arcsec) / scale
     b = u.Quantity(table["SMIA_3sigma"]).to_value(u.arcsec) / scale
     ang = u.Quantity(table["ellipse_angle"]).to_value(u.deg)
     p = u.Quantity(table["posunc"]).to_value(u.arcsec) / scale
 
-    keep = np.zeros(len(table), dtype=bool)
-    for i in range(len(table)):
+    def overlaps(i, xi, yi):
         if np.all(np.isfinite([a[i], b[i], ang[i]])):
-            keep[i] = ellipse_overlaps_image(x[i], y[i], a[i], b[i], ang[i], nx, ny)
-        else:   # no ellipse: use the SkyBoT position uncertainty as a circle
-            r = max(p[i] if np.isfinite(p[i]) else 0.0, 1e-6)
-            keep[i] = ellipse_overlaps_image(x[i], y[i], r, r, 0.0, nx, ny)
+            return ellipse_overlaps_image(xi, yi, a[i], b[i], ang[i], nx, ny)
+        # no ellipse: use the SkyBot posunc as a circle
+        r = max(p[i] if np.isfinite(p[i]) else 0.0, 1e-6)
+        return ellipse_overlaps_image(xi, yi, r, r, 0.0, nx, ny)
 
+    keep = np.array([overlaps(i,x[i],y[i]) or overlaps(i, x_end[i], y_end[i])
+                    for i in range(len(table))], dtype=bool)
+    
     table["x_pix"] = x
     table["y_pix"] = y
+    table["x_pix_end"] = x_end
+    table["y_pix_end"] = y_end
     return table[keep]
+
+def compute_trail_length(info: ImageInfo, table):
+    """Compute the length (in pixels and arcseconds) of the trail produced by an object during the exposure. 
+    It can be computed in two ways: 
+    1) by using the starting and ending pixels, computing their distance and converting it to arcseconds using pixel_scale
+    2) by multiplying sky_speed * exp_time and converting it to arcseconds and then to pixels. 
+    We prefer the second way. 
+    """
+    if info.exptime is None:
+        table["trail_length"] = np.full(len(table), np.nan) * u.arcsec
+        table["trail_length [px]"] = np.full(len(table), np.nan)
+        return
+
+    sky_speed = table["sky_speed"] # already in u.arcsec/u.min
+    exptime = info.exptime.to(u.s) 
+    pixel_scale = info.pixel_scale * u.arcsec / u.pixel
+    trail_length = (sky_speed * exptime).to(u.arcsec)
+    table["trail_length"] = trail_length
+    table["trail_length [px]"] = (trail_length / pixel_scale).to_value(u.pixel)

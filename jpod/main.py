@@ -1,4 +1,4 @@
-"""Find the asteroids in a FITS image with SkyBoT and add JPL uncertainty ellipses."""
+"""Find the asteroids in a FITS image with MPChecker (previously SkyBoT) and add JPL uncertainty ellipses."""
 import argparse
 from pathlib import Path
 
@@ -9,26 +9,29 @@ import matplotlib.pyplot as plt
 
 from . import __version__
 from .catalogs import fetch_jpl_data, query_skybot
+from .skybot_alternative import query_mpc_identification
 from .image_geometry import (
     add_ellipse_image_angle,
     filter_in_image,
     image_orientation,
     load_image,
+    describe_time,
     search_radius,
+    compute_trail_length,
 )
-from .plotting import plot_field
+from .plotting import plot_field, plot_cutouts
 from .detection import add_detection_probability
 from .output import save_table_csv
+from .config import MARGIN, OUTPUT_COLUMNS, OBSCODES_JSON, ZOOM_HALF_SIZE
 
-MARGIN = 5 * u.arcmin    # widen the cone so ellipses of nearby objects are not missed
 MAGNIFY = 10             # ellipse magnification in the plot (1 = true size)
+MOTION_SCALE = 10
+ZOOM_OBJECTS = []
 
-OUTPUT_COLUMNS = [
-    "Name", "RA", "DEC", "posunc", "V", "H",
-    "RA_rate", "DEC_rate", "sky_speed",
-    "SMAA_3sigma", "SMIA_3sigma", "LOV_PA", "ellipse_angle",
-    "P_pos", "P_mag", "P_det",
-]
+
+DATE_OBS = None         # None: read it from the header, or force it
+TIME_REFERENCE = None   # what DATE-OBS (or similar keywords) means: "start", "mid" or "end" of the exposure
+
 
 def resolve_path(path, workdir, default_subdir=None):
     """
@@ -60,12 +63,12 @@ def create_parser() -> argparse.ArgumentParser:
                         +" Default parent directory is the data directory")
     parser.add_argument("-outdir", "--output_dir", type=Path, default=None, help="Output directory")
 
-    parser.add_argument("-obs", "--observatory", type=str, default="I41", help="Observatory code")
+    parser.add_argument("-obs", "--observatory", type=str, default=None, help="Observatory code")
     parser.add_argument("--vlim", type=float, default=21.5, help="Limiting magnitude of the image")
     parser.add_argument("--sigmav", type=float, default=0.5, help="Standard deviation of the magnitude")
     parser.add_argument("--pmin", type=float, default=0.05, help="Minimum detection probability")
 
-    parser.add_argument("--savefig", action="store_true", default=False, help="Save the plots as PNG files")
+    parser.add_argument("--savefig", action="store_true", default=True, help="Save the plots as PNG files")
     parser.add_argument("--printtable", action="store_true", default=False, help="Print the complete table of results")
 
     parser.add_argument(
@@ -79,9 +82,14 @@ def create_parser() -> argparse.ArgumentParser:
 def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
 
     prefix = Path(fits_file).stem
-    info = load_image(fits_file)
+    info = load_image(fits_file, args.observatory, TIME_REFERENCE, DATE_OBS, OBSCODES_JSON)
 
     # 1. Image and orientation
+    print(f"\nObservatory code: {info.observatory_code} ({info.obs_code_source})\n")
+    print()
+    for line in describe_time(info):
+        print(line)
+    print()
     angle_north, angle_east, parity = image_orientation(info.wcs, info.center)
     print(
         f"At the image center: North points at {angle_north:.4f} deg, "
@@ -89,40 +97,46 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
         f"parity = {parity:+d}"
     )
 
-    # 2. SkyBoT cone search
-    field = SkyCoord(info.center.ra.deg * u.deg, info.center.dec.deg * u.deg, frame="icrs")
+    # 2. MPC search
+    # ----- Previous SkyBoT search -----
+    #field = SkyCoord(info.center.ra.deg * u.deg, info.center.dec.deg * u.deg, frame="icrs")
+    #radius = search_radius(info, MARGIN)
+    #print(f"Querying SkyBoT for asteroids in the image field in a radius of {radius}...")
+    #table = query_skybot(field, radius, info.start_obs, info.observatory_code)
     radius = search_radius(info, MARGIN)
-    print(f"Querying SkyBoT for asteroids in the image field in a radius of {radius}...")
-    table = query_skybot(field, radius, info.epoch, args.observatory)
+    print(f"Querying MPC MPChecker for asteroids in the image field in a radius of {radius}...", flush=True)
+    table = query_mpc_identification(info, radius)
     if len(table) == 0:
         print("No asteroids found in this field of view.")
         return
 
     # 3. JPL data, ellipse orientation in the image, overlap filter
-    fetch_jpl_data(table, info.epoch, args.observatory)
-
-    # Filter out objects with excessively large uncertainties (e.g. > 10 arcmin)
-    max_uncertainty = 600 * u.arcsec 
-    smaa = u.Quantity(table["SMAA_3sigma"])
-    threshold = (smaa < max_uncertainty) | np.isnan(smaa.value)
-    table = table[threshold]
-    print(f"\nFiltered out {np.sum(~threshold)} objects with excessively large uncertainties.")
-
+    fetch_jpl_data(table, info.start_obs, info.end_obs, info.observatory_code)
     add_ellipse_image_angle(table, info.wcs)
     table = filter_in_image(table, info)
+    compute_trail_length(info, table)
     print(f"\n{len(table)} objects overlap the image.")
     if len(table) == 0:
         return
 
+    # Filter out objects with excessively large uncertainties (e.g. > 10 arcmin)
+    #max_uncertainty = 600 * u.arcsec 
+    #smaa = u.Quantity(table["SMAA_3sigma"])
+    #threshold = (smaa < max_uncertainty) | np.isnan(smaa.value)
+    #table = table[threshold]
+    #print(f"\nFiltered out {np.sum(~threshold)} objects with excessively large uncertainties.")
+
     # 4. Detection probability and survivors
     add_detection_probability(table, info, args.vlim, args.sigmav)
     survivors = np.asarray(table["P_det"], dtype=float) >= args.pmin
+    table["detectable"] = survivors
     n_surv = int(survivors.sum())
     print(f"{n_surv} of {len(table)} objects have P_det >= {args.pmin}"
           f"(V_lim = {args.vlim}, sigma_V = {args.sigmav})")
     print(f"Expected number of detections: {np.nansum(table['P_det']):.2f}")
-
     table.sort("P_det", reverse=True) # sort by P_det desc
+    survivors = np.asarray(table["detectable"], dtype=bool) #rebuilt after sorting
+
 
     # 5. Plots
     plot_field(
@@ -131,10 +145,14 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
         angle_north,
         angle_east, 
         magnify=MAGNIFY,
-        show = False, 
-        title =f"All objects overlapping the image (ellipses x{MAGNIFY})",
+        object_class="NEA",
+        survivors=None,
+        show=False,
+        title = None,
         output_dir=output_dir / "plots",
         output_file=f"{prefix}_candidates.png" if args.savefig else None,
+        V_lim=args.vlim,
+        P_min=args.pmin
         )
     plot_field(
         info, 
@@ -142,13 +160,28 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
         angle_north, 
         angle_east, 
         magnify=MAGNIFY, 
-        show = False, 
+        object_class=None,
         survivors=survivors, 
-        title = (f"Green: P_det >= {args.pmin} (V_lim ={args.vlim});"
-                f"grey: below threshold (ellipses x{MAGNIFY})"),
+        show=False,
+        title = None,
         output_dir=output_dir / "plots",
         output_file=f"{prefix}_survivors.png" if args.savefig else None,
+        V_lim=args.vlim,
+        P_min=args.pmin
         )
+    if ZOOM_OBJECTS:
+        plot_cutouts(
+            info, 
+            table, 
+            ZOOM_OBJECTS, 
+            ZOOM_HALF_SIZE, 
+            magnify=MAGNIFY, 
+            motion_scale = MOTION_SCALE, 
+            output_dir = output_dir / "plots",
+            output_file=f"{prefix}_zoom.png" if args.savefig else None,
+            show=False 
+            )   
+    #plt.show()
 
     # 6. Table
     csv_file = f"{prefix}_results.csv"
