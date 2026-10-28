@@ -19,3 +19,9 @@ dependencies = [
 [project.scripts]
 # maps j-pod to main() in jpod. So can use j-pod from CLI
 j-pod = "jpod.main:main"
+
+[tool.setuptools.packages.find]
+include = ["jpod", "jpod.*"]
+
+[tool.setuptools.package-data]
+jpod = ["fits_header/*.json"]
