@@ -15,3 +15,6 @@ output/plots/*
 output/tables/*
 data/test.fits
 j_pod.egg-info/
+data/new-image.fits
+data/ztf*.fits
+build
