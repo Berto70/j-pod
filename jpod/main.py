@@ -67,6 +67,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vlim", type=float, default=21.5, help="Limiting magnitude of the image")
     parser.add_argument("--sigmav", type=float, default=0.5, help="Standard deviation of the magnitude")
     parser.add_argument("--pmin", type=float, default=0.05, help="Minimum detection probability")
+    parser.add_argument("--magnify", type=float, default=1.0, help="Magnification factor for the ellipses in the plots")
 
     parser.add_argument("--savefig", action="store_true", default=False, help="Save the plots as PNG files")
     parser.add_argument("--printtable", action="store_true", default=False, help="Print the complete table of results")
@@ -144,7 +145,7 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
         table, 
         angle_north,
         angle_east, 
-        magnify=MAGNIFY,
+        magnify=args.magnify,
         object_class="NEA",
         survivors=None,
         show=False,
@@ -159,7 +160,7 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
         table, 
         angle_north, 
         angle_east, 
-        magnify=MAGNIFY, 
+        magnify=args.magnify, 
         object_class=None,
         survivors=survivors, 
         show=False,
@@ -175,7 +176,7 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
             table, 
             ZOOM_OBJECTS, 
             ZOOM_HALF_SIZE, 
-            magnify=MAGNIFY, 
+            magnify=args.magnify, 
             motion_scale = MOTION_SCALE, 
             output_dir = output_dir / "plots",
             output_file=f"{prefix}_zoom.png" if args.savefig else None,
