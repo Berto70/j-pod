@@ -82,7 +82,7 @@ def get_observatory_code(header, override=None, obscodes=None):
     
     print(f"WARNING: no observatory code found ({reason}). "
           f"Using the geocentric code {GEOCENTRIC_CODE}: positions of nearby "
-          "objects will be inaccurate. Set OBSERVATORY_CODE in main.py.")
+          "objects will be inaccurate. use --observatory/-obs to set the correct code.")
     return GEOCENTRIC_CODE, "NOT FOUND, geocentric default"
  
  
