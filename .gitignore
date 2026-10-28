@@ -1,4 +1,4 @@
-.vscode/settings.json
+.vscode
 .DS_Store
 jpod/.DS_Store
 output/.DS_Store
@@ -18,3 +18,5 @@ j_pod.egg-info/
 data/new-image.fits
 data/ztf*.fits
 build
+.mypy_cache
+.conda
