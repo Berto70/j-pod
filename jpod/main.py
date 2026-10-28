@@ -68,7 +68,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sigmav", type=float, default=0.5, help="Standard deviation of the magnitude")
     parser.add_argument("--pmin", type=float, default=0.05, help="Minimum detection probability")
 
-    parser.add_argument("--savefig", action="store_true", default=True, help="Save the plots as PNG files")
+    parser.add_argument("--savefig", action="store_true", default=False, help="Save the plots as PNG files")
     parser.add_argument("--printtable", action="store_true", default=False, help="Print the complete table of results")
 
     parser.add_argument(
@@ -186,7 +186,7 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
     # 6. Table
     csv_file = f"{prefix}_results.csv"
     save_table_csv(table, output_dir / "tables", csv_file, OUTPUT_COLUMNS)
-    print(f"\nTable saved to {csv_file}")
+    print(f"\nTable saved to {output_dir}/tables/{csv_file}")
     if args.printtable:
         print("\n--- Complete target results ---")
         table[OUTPUT_COLUMNS].pprint_all()
