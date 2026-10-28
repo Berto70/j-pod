@@ -39,7 +39,7 @@ EXPTIME_KEYWORDS = ("EXPTIME", "EXPOSURE", "EXPTIM")
 OBS_CODE_KEYWORDS = ("OBSCODE", "MPCCODE", "OBS-CODE")
  
 # Used (with a warning) when no code can be found: the centre of the Earth.
-GEOCENTRIC_CODE = "500"
+# GEOCENTRIC_CODE = "500"
  
 # MPC codes are 3 digits (e.g. 500) or one letter + 2 digits (e.g. C89, J75).
 OBS_CODE_PATTERN = re.compile(r"^(\d{3}|[A-Za-z]\d{2})$")
@@ -80,10 +80,11 @@ def get_observatory_code(header, override=None, obscodes=None):
             return code, message
         reason = message
     
-    print(f"WARNING: no observatory code found ({reason}). "
-          f"Using the geocentric code {GEOCENTRIC_CODE}: positions of nearby "
-          "objects will be inaccurate. use --observatory/-obs to set the correct code.")
-    return GEOCENTRIC_CODE, "NOT FOUND, geocentric default"
+    warning = (
+        f"WARNING: no observatory code found ({reason}). "
+        f"Use --observatory/-obs to set the correct code."
+    )
+    raise ValueError(warning)
  
  
 # ---------------------------------------------------------------- time
