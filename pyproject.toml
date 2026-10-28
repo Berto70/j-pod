@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "j-pod"
-version = "0.2.3"
+version = "0.3.0"
 description = "Find asteroids in FITS images with SkyBoT and JPL uncertainty ellipses."
 requires-python = ">=3.10"
 
