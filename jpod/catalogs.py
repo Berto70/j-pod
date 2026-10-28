@@ -347,7 +347,6 @@ def fetch_jpl_data(table, start_obs, end_obs, observatory_code):
     n_jpl = 0
     for i in range(n):
         object_name = str(table["Name"][i]).strip()
-        print(f" [{i + 1}/{n}] {object_name}: querying Horizons...", flush=True)
         jpl_data = None
         last_error = None
 
