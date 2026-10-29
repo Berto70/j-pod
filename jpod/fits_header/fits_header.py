@@ -39,7 +39,7 @@ EXPTIME_KEYWORDS = ("EXPTIME", "EXPOSURE", "EXPTIM")
 OBS_CODE_KEYWORDS = ("OBSCODE", "MPCCODE", "OBS-CODE")
  
 # Used (with a warning) when no code can be found: the centre of the Earth.
-# GEOCENTRIC_CODE = "500"
+GEOCENTRIC_CODE = "500"
  
 # MPC codes are 3 digits (e.g. 500) or one letter + 2 digits (e.g. C89, J75).
 OBS_CODE_PATTERN = re.compile(r"^(\d{3}|[A-Za-z]\d{2})$")
@@ -56,35 +56,38 @@ COMMENT_PATTERNS = {
 } 
  
 # ---------------------------------------------------------------- code
-def get_observatory_code(header, override=None, obscodes=None):
+def get_observatory_code(header, fallback_code=None, obscodes=None):
     """Return (code, source); source says where the code came from.
  
     Order: 
-    1) 'override'; 
-    2) a header keyword in OBS_CODE_KEYWORDS;
-    3) the MPC list 'obscodes', by coordinate or name;
+    1) a header keyword in OBS_CODE_KEYWORDS;
+    2) the MPC list 'obscodes', by coordinate or name;
+    3) 'fallback_code', if neither the header nor the MPC list provides a code;
     4) geocentric code, with a warning.
     """
-    if override:
-        return str(override).strip().upper(), "set manually"
- 
     for key in OBS_CODE_KEYWORDS:
         if key in header:
             value = str(header[key]).strip()
             if OBS_CODE_PATTERN.match(value):
                 return value.upper(), f"header keyword {key}"
+
     reason = "no list of observatory codes was given"
     if obscodes:
         code, message = find_code(obscodes, header)
         if code:
             return code, message
         reason = message
-    
+
+    if fallback_code:
+        return str(fallback_code).strip().upper(), "set manually"
+
     warning = (
         f"WARNING: no observatory code found ({reason}). "
-        f"Use --observatory/-obs to set the correct code."
+        f"Using geocentric code {GEOCENTRIC_CODE}; "
+        f"use --observatory/-obs to set a different code."
     )
-    raise ValueError(warning)
+    print(warning)
+    return GEOCENTRIC_CODE, "geocentric fallback"
  
  
 # ---------------------------------------------------------------- time
@@ -200,8 +203,6 @@ def get_obs_times(header, time_reference=None, date_obs_override=None):
 
     
    
-
-
 
 
 

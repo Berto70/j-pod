@@ -24,7 +24,6 @@ from .detection import add_detection_probability
 from .output import save_table_csv
 from .config import MARGIN, OUTPUT_COLUMNS, OBSCODES_JSON, ZOOM_HALF_SIZE
 
-MAGNIFY = 10             # ellipse magnification in the plot (1 = true size)
 MOTION_SCALE = 10
 ZOOM_OBJECTS = []
 
@@ -63,7 +62,8 @@ def create_parser() -> argparse.ArgumentParser:
                         +" Default parent directory is the data directory")
     parser.add_argument("-outdir", "--output_dir", type=Path, default=None, help="Output directory")
 
-    parser.add_argument("-obs", "--observatory", type=str, default=None, help="Observatory code")
+    parser.add_argument("-obs", "--observatory", type=str, default=None,
+                        help="Observatory code to use when the image header has no valid code")
     parser.add_argument("--vlim", type=float, default=21.5, help="Limiting magnitude of the image")
     parser.add_argument("--sigmav", type=float, default=0.5, help="Standard deviation of the magnitude")
     parser.add_argument("--pmin", type=float, default=0.05, help="Minimum detection probability")

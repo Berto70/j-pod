@@ -33,7 +33,9 @@ class ImageInfo:
 
 def load_image(fits_file: str, observatory_code = None, time_reference = None, date_obs = None, obscodes_json = None)-> ImageInfo:
     """Read the FITS file and return an ImageInfo.
-    observatory_code : force the MPC code; if None it is taken from the header or, failing that, from the MPC list (obscodes_json)
+    observatory_code : use this MPC code only when the header has no valid code;
+        otherwise the code is read from the header, then inferred from obscodes_json,
+        and finally defaults to geocentric code 500 with a warning
     time_reference : None (automatic) or 'start', 'mid', 'end' to force what the time in the header means
     obscodes_json: path of the MPC JSON list of observatory codes
     date_obs: force the observation time (UTC string); if None it is taken from the header
