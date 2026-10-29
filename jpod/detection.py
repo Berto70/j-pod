@@ -43,7 +43,12 @@ def position_probability(mu, cov, xmin, xmax, ymin, ymax):
     cov = np.asarray(cov, dtype=float) + MIN_VARIANCE*np.eye(2)
    
     def cdf(x, y):
-        return multivariate_normal.cdf([x, y], mean=mu, cov=cov)
+        # Very elongated but valid uncertainty ellipses can be numerically
+        # singular at pixel precision. Their covariance is positive
+        # semidefinite, so let SciPy evaluate the degenerate limit.
+        return multivariate_normal.cdf(
+            [x, y], mean=mu, cov=cov, allow_singular=True
+        )
 
     p = cdf(xmax, ymax) - cdf(xmin, ymax) - cdf(xmax, ymin) + cdf(xmin, ymin)
     return p
@@ -56,7 +61,8 @@ def magnitude_probability(v, v_lim, sigma_v=0.5):
 
 def _plain(column):
     """Column -> float array, with masked values replaced by NaN."""
-    return np.ma.filled(np.ma.asarray(column, dtype=float), np.nan)
+    values = column.value if isinstance(column, u.Quantity) else column
+    return np.ma.filled(np.ma.asarray(values, dtype=float), np.nan)
 
 
 def add_detection_probability(table, info, v_lim, sigma_v=0.5,

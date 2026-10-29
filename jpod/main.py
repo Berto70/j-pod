@@ -1,15 +1,11 @@
-"""Find the asteroids in a FITS image with MPChecker (previously SkyBoT) and add JPL uncertainty ellipses."""
+"""Find asteroids in FITS images with a selected provider and enrich via Horizons."""
 import argparse
 from pathlib import Path
 
-import astropy.units as u
-from astropy.coordinates import SkyCoord
 import numpy as np
-import matplotlib.pyplot as plt
 
 from . import __version__
-from .catalogs import fetch_jpl_data, query_skybot
-from .skybot_alternative import query_mpc_identification
+from .horizons import enrich_with_horizons
 from .image_geometry import (
     add_ellipse_image_angle,
     filter_in_image,
@@ -19,6 +15,7 @@ from .image_geometry import (
     search_radius,
     compute_trail_length,
 )
+from .providers import query_mpc_identification, query_skybot
 from .plotting import plot_field, plot_cutouts
 from .detection import add_detection_probability
 from .output import save_table_csv
@@ -48,6 +45,17 @@ def resolve_path(path, workdir, default_subdir=None):
     else:
         return (workdir / p).resolve()
 
+
+def _ensure_pixel_trail_length(info, table):
+    """Restore the pixel trail column if a downstream step removed it."""
+    if "trail_length [px]" not in table.colnames:
+        print(
+            "Warning: pixel trail length is missing; recalculating trail lengths "
+            "before saving."
+        )
+        compute_trail_length(info, table)
+
+
 def create_parser() -> argparse.ArgumentParser:
     """Parsing CLI arguments."""
 
@@ -63,7 +71,13 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("-outdir", "--output_dir", type=Path, default=None, help="Output directory")
 
     parser.add_argument("-obs", "--observatory", type=str, default=None,
-                        help="Observatory code to use when the image header has no valid code")
+                        help="Fallback observatory code when header/site lookup finds none")
+    parser.add_argument(
+        "--provider",
+        choices=("mpc", "skybot"),
+        default="skybot",
+        help="Small-body discovery provider (default: skybot)",
+    )
     parser.add_argument("--vlim", type=float, default=21.5, help="Limiting magnitude of the image")
     parser.add_argument("--sigmav", type=float, default=0.5, help="Standard deviation of the magnitude")
     parser.add_argument("--pmin", type=float, default=0.05, help="Minimum detection probability")
@@ -83,9 +97,13 @@ def create_parser() -> argparse.ArgumentParser:
 def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
 
     prefix = Path(fits_file).stem
-    info = load_image(fits_file, args.observatory, TIME_REFERENCE, DATE_OBS, OBSCODES_JSON)
+    # 1. Load the FITS image and resolve its WCS, observatory code, and times
+    #    before making any provider requests.
+    info = load_image(
+        fits_file, args.observatory, TIME_REFERENCE, DATE_OBS, OBSCODES_JSON
+    )
 
-    # 1. Image and orientation
+    # 2. Report the resolved image centre, observation interval, and orientation.
     print(f"\nObservatory code: {info.observatory_code} ({info.obs_code_source})\n")
     print()
     for line in describe_time(info):
@@ -98,21 +116,33 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
         f"parity = {parity:+d}"
     )
 
-    # 2. MPC search
-    # ----- Previous SkyBoT search -----
-    #field = SkyCoord(info.center.ra.deg * u.deg, info.center.dec.deg * u.deg, frame="icrs")
-    #radius = search_radius(info, MARGIN)
-    #print(f"Querying SkyBoT for asteroids in the image field in a radius of {radius}...")
-    #table = query_skybot(field, radius, info.start_obs, info.observatory_code)
+    # 3. Discover small bodies; both adapters return the shared provider schema.
     radius = search_radius(info, MARGIN)
-    print(f"Querying MPC MPChecker for asteroids in the image field in a radius of {radius}...", flush=True)
-    table = query_mpc_identification(info, radius)
+    if args.provider == "mpc":
+        print(
+            f"Querying MPC MPChecker for minor planets in the image field "
+            f"in a radius of {radius}...",
+            flush=True,
+        )
+        table = query_mpc_identification(info, radius)
+    else:
+        print(
+            f"Querying SkyBoT for small bodies in the image field "
+            f"in a radius of {radius}...",
+            flush=True,
+        )
+        table = query_skybot(
+            info.center, radius, info.start_obs, info.observatory_code
+        )
     if len(table) == 0:
-        print("No asteroids found in this field of view.")
+        print("No small bodies found in this field of view.")
         return
 
-    # 3. JPL data, ellipse orientation in the image, overlap filter
-    fetch_jpl_data(table, info.start_obs, info.end_obs, info.observatory_code)
+    # 4. Enrich candidates with Horizons data, then keep the image-overlapping
+    #    objects and measure their projected trail lengths.
+    table = enrich_with_horizons(
+        table, info.start_obs, info.end_obs, info.observatory_code
+    )
     add_ellipse_image_angle(table, info.wcs)
     table = filter_in_image(table, info)
     compute_trail_length(info, table)
@@ -127,7 +157,7 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
     #table = table[threshold]
     #print(f"\nFiltered out {np.sum(~threshold)} objects with excessively large uncertainties.")
 
-    # 4. Detection probability and survivors
+    # 5. Combine positional and magnitude probabilities into the final score.
     add_detection_probability(table, info, args.vlim, args.sigmav)
     survivors = np.asarray(table["P_det"], dtype=float) >= args.pmin
     table["detectable"] = survivors
@@ -139,7 +169,7 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
     survivors = np.asarray(table["detectable"], dtype=bool) #rebuilt after sorting
 
 
-    # 5. Plots
+    # 6. Render candidate and detection-probability plots.
     plot_field(
         info,
         table, 
@@ -184,7 +214,8 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
             )   
     #plt.show()
 
-    # 6. Table
+    # 7. Save only the compact, user-facing result columns to CSV.
+    _ensure_pixel_trail_length(info, table)
     csv_file = f"{prefix}_results.csv"
     save_table_csv(table, output_dir / "tables", csv_file, OUTPUT_COLUMNS)
     print(f"\nTable saved to {output_dir}/tables/{csv_file}")

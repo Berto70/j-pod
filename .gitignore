@@ -20,3 +20,4 @@ data/ztf*.fits
 build
 .mypy_cache
 .conda
+.tests/

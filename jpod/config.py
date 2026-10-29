@@ -9,8 +9,10 @@ MARGIN = 5 * u.arcmin
 
 # Columns of the results table, in this order
 OUTPUT_COLUMNS = [
-    "Name", "class", "sub-class","source", "RA", "DEC", "RA_end", "DEC_end", "posunc", "V", "H",
-    "RA_rate", "DEC_rate", "sky_speed", "trail_length", "trail_length [px]",
+    "Name", "class", "sub-class", "source",
+    "RA", "DEC", "RA_end", "DEC_end", "V", "H",
+    "RA_cosdec_rate", "DEC_rate", "sky_speed",
+    "trail_length", "trail_length [px]",
     "SMAA_3sigma", "SMIA_3sigma", "LOV_PA", "ellipse_angle",
     "P_pos", "P_mag", "P_det", "detectable",
 ]
@@ -18,6 +20,6 @@ OUTPUT_COLUMNS = [
 # Figures
 ZOOM_HALF_SIZE = 60
 
-# MPC list of observatory codes, used only if the header has no code
+# MPC list used to infer an observatory code when no valid code is in the header.
 PROJECT_DIR = Path(__file__).resolve().parent
 OBSCODES_JSON = PROJECT_DIR / "fits_header" / "obscodes_extended.json"

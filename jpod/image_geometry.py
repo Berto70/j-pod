@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 
 import astropy.units as u
+from astropy.table import Column
 import numpy as np
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
@@ -33,9 +34,8 @@ class ImageInfo:
 
 def load_image(fits_file: str, observatory_code = None, time_reference = None, date_obs = None, obscodes_json = None)-> ImageInfo:
     """Read the FITS file and return an ImageInfo.
-    observatory_code : use this MPC code only when the header has no valid code;
-        otherwise the code is read from the header, then inferred from obscodes_json,
-        and finally defaults to geocentric code 500 with a warning
+    observatory_code : fallback code used only if neither the header nor
+        obscodes_json provides a code; otherwise it defaults to geocentric 500
     time_reference : None (automatic) or 'start', 'mid', 'end' to force what the time in the header means
     obscodes_json: path of the MPC JSON list of observatory codes
     date_obs: force the observation time (UTC string); if None it is taken from the header
@@ -174,7 +174,7 @@ def filter_in_image(table, info: ImageInfo):
     def overlaps(i, xi, yi):
         if np.all(np.isfinite([a[i], b[i], ang[i]])):
             return ellipse_overlaps_image(xi, yi, a[i], b[i], ang[i], nx, ny)
-        # no ellipse: use the SkyBot posunc as a circle
+        # Without a Horizons ellipse, use the provider's positional uncertainty.
         r = max(p[i] if np.isfinite(p[i]) else 0.0, 1e-6)
         return ellipse_overlaps_image(xi, yi, r, r, 0.0, nx, ny)
 
@@ -196,12 +196,22 @@ def compute_trail_length(info: ImageInfo, table):
     """
     if info.exptime is None:
         table["trail_length"] = np.full(len(table), np.nan) * u.arcsec
-        table["trail_length [px]"] = np.full(len(table), np.nan)
+        _set_pixel_trail_column(table, np.full(len(table), np.nan))
         return
 
-    sky_speed = table["sky_speed"] # already in u.arcsec/u.min
+    sky_speed = table["sky_speed"] # already in arcsec/hour
     exptime = info.exptime.to(u.s) 
     pixel_scale = info.pixel_scale * u.arcsec / u.pixel
     trail_length = (sky_speed * exptime).to(u.arcsec)
     table["trail_length"] = trail_length
-    table["trail_length [px]"] = (trail_length / pixel_scale).to_value(u.pixel)
+    pixel_trail = (trail_length / pixel_scale).to_value(u.pixel)
+    _set_pixel_trail_column(table, pixel_trail)
+
+
+def _set_pixel_trail_column(table, values):
+    """Set the plain numeric pixel column with an explicit Astropy name."""
+    column = Column(np.asarray(values), name="trail_length [px]")
+    if "trail_length [px]" in table.colnames:
+        table.replace_column("trail_length [px]", column)
+    else:
+        table.add_column(column)

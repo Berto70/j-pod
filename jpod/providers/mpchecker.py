@@ -1,16 +1,17 @@
-"""MPC MPChecker discovery adapted to the existing catalog pipeline."""
+"""Asteroid discovery using the Minor Planet Center's MPChecker form."""
 
 import re
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 from html.parser import HTMLParser
 
 import astropy.units as u
 import numpy as np
 import requests
 from astropy.coordinates import Angle
-from astropy.table import Table
+from astropy.time import Time
 
-from .image_geometry import ImageInfo
+from ..image_geometry import ImageInfo
+from .schema import make_provider_table
 
 
 MPC_CHECKER_FORM_URL = "https://minorplanetcenter.net/cgi-bin/checkmp.cgi"
@@ -58,11 +59,45 @@ _MPC_RESULT_ROW = re.compile(
 
 
 def _signed_rate(value):
-    """Parse MPChecker's arcseconds/hour rate, e.g. ``3-``."""
+    """Parse MPChecker's signed arcseconds/hour rate, for example ``3-``."""
     return float(value[:-1]) * (-1 if value.endswith("-") else 1)
 
 
-def _mpchecker_table(html):
+def _number_from_name(name):
+    if re.fullmatch(r"\s*\(\s*\d{4}\s+[A-Z]{1,2}\d+[A-Z]?\s*\)\s*", name):
+        return ""
+    parenthesized = re.match(r"^\s*\(\s*(\d+)\s*\)\s+\S", name)
+    if parenthesized:
+        return parenthesized.group(1)
+    numbered = re.match(r"^\s*(\d+)\s+", name)
+    if not numbered:
+        return ""
+    number = numbered.group(1)
+    remainder = name[numbered.end():]
+    provisional = re.match(r"[A-Z]{1,2}\d*[A-Z]?(?:\s|$)", remainder)
+    if len(number) == 4 and 1800 <= int(number) <= 2099 and provisional:
+        return ""
+    return number
+
+
+def _empty_table(epoch):
+    return make_provider_table(
+        names=[],
+        numbers=[],
+        ra=[],
+        dec=[],
+        ra_cosdec_rate=[],
+        dec_rate=[],
+        magnitudes=[],
+        position_uncertainties=[],
+        classes=[],
+        subclasses=[],
+        provider="MPC MPChecker",
+        epoch=epoch,
+    )
+
+
+def _mpchecker_table(html, epoch):
     if "Error from WebCS Script" in html or "Incorrect Form Entry" in html:
         message = re.sub(r"<[^>]+>", " ", html)
         message = " ".join(message.split())
@@ -72,7 +107,7 @@ def _mpchecker_table(html):
     parser.feed(html)
     if not parser.parts:
         if "No known minor planets" in html:
-            return _empty_mpc_table()
+            return _empty_table(epoch)
         raise ValueError("MPC MPChecker response did not contain a results block")
 
     names = []
@@ -91,9 +126,7 @@ def _mpchecker_table(html):
         name = row["name"].strip()
         if row["number"]:
             name = f'{row["number"].strip()} {name}'
-        ra = Angle(
-            f'{row["ra_h"]}h{row["ra_m"]}m{row["ra_s"]}s'
-        ).to_value(u.deg)
+        ra = Angle(f'{row["ra_h"]}h{row["ra_m"]}m{row["ra_s"]}s').to_value(u.deg)
         dec_sign = -1 if row["dec_d"].startswith("-") else 1
         dec = dec_sign * (
             abs(int(row["dec_d"]))
@@ -105,60 +138,31 @@ def _mpchecker_table(html):
         numbers.append(_number_from_name(name))
         ra_values.append(ra)
         dec_values.append(dec)
-        ra_rates.append(_signed_rate(row["ra_rate"]) / 60)
-        dec_rates.append(_signed_rate(row["dec_rate"]) / 60)
+        # MPChecker documents its RA motion as already including cos(Dec).
+        ra_rates.append(_signed_rate(row["ra_rate"]))
+        dec_rates.append(_signed_rate(row["dec_rate"]))
         magnitudes.append(float(row["mag"]))
 
     if not names and "No known minor planets" not in html:
         raise ValueError("MPC MPChecker returned results, but no object rows could be parsed")
-    return _make_mpc_table(names, numbers, ra_values, dec_values, ra_rates, dec_rates, magnitudes)
-
-
-def _empty_mpc_table():
-    return _make_mpc_table([], [], [], [], [], [], [])
-
-
-def _make_mpc_table(names, numbers, ra, dec, ra_rate, dec_rate, magnitudes):
-    table = Table()
-    table["Name"] = names
-    table["Number"] = numbers
-    table["RA"] = np.asarray(ra) * u.deg
-    table["DEC"] = np.asarray(dec) * u.deg
-    table["RA_rate"] = np.asarray(ra_rate) * (u.arcsec / u.min)
-    table["DEC_rate"] = np.asarray(dec_rate) * (u.arcsec / u.min)
-    table["sky_speed"] = np.hypot(ra_rate, dec_rate) * (u.arcsec / u.min)
-    table["posunc"] = np.full(len(table), np.nan) * u.arcsec
-    table["V"] = np.asarray(magnitudes) * u.mag
-    table["class"] = np.full(len(table), "", dtype="U1")
-    table["sub-class"] = np.full(len(table), "", dtype="U1")
-    table["discovery_source"] = np.full(len(table), "MPC MPChecker", dtype="U20")
-    return table
-
-
-def _number_from_name(name):
-    parenthesized_designation = re.fullmatch(
-        r"\s*\(\s*\d{4}\s+[A-Z]{1,2}\d+[A-Z]?\s*\)\s*", name
+    return make_provider_table(
+        names=names,
+        numbers=numbers,
+        ra=ra_values,
+        dec=dec_values,
+        ra_cosdec_rate=ra_rates,
+        dec_rate=dec_rates,
+        magnitudes=magnitudes,
+        position_uncertainties=np.full(len(names), np.nan),
+        classes=[""] * len(names),
+        subclasses=[""] * len(names),
+        provider="MPC MPChecker",
+        epoch=epoch,
     )
-    if parenthesized_designation:
-        return ""
-
-    parenthesized = re.match(r"^\s*\(\s*(\d+)\s*\)\s+\S", name)
-    if parenthesized:
-        return parenthesized.group(1)
-
-    numbered = re.match(r"^\s*(\d+)\s+", name)
-    if not numbered:
-        return ""
-    number = numbered.group(1)
-    remainder = name[numbered.end():]
-    provisional = re.match(r"[A-Z]{1,2}\d*[A-Z]?(?:\s|$)", remainder)
-    if len(number) == 4 and 1800 <= int(number) <= 2099 and provisional:
-        return ""
-    return number
 
 
 def query_mpc_identification(info: ImageInfo, radius):
-    """Find minor planets with MPC MPChecker for the existing catalog pipeline."""
+    """Find asteroids with MPChecker and normalize them to the shared schema."""
     radius_arcmin = float(u.Quantity(radius).to_value(u.arcmin))
     if not np.isfinite(radius_arcmin) or radius_arcmin <= 0:
         raise ValueError("The MPChecker search radius must be finite and positive")
@@ -179,6 +183,10 @@ def query_mpc_identification(info: ImageInfo, radius):
         utc += timedelta(days=1)
         centidays = 0
     day = utc.day + centidays / 100
+    epoch = Time(
+        datetime.combine(utc.date(), time.min) + timedelta(days=centidays / 100),
+        scale="utc",
+    )
     params = {
         "year": str(utc.year),
         "month": f"{utc.month:02d}",
@@ -192,8 +200,7 @@ def query_mpc_identification(info: ImageInfo, radius):
         ),
         "TextArea": "",
         "radius": str(radius_arcmin),
-        # MPChecker requires a magnitude limit; 30.0 is its highest verified
-        # accepted value and is not equivalent to an unlimited search.
+        # MPChecker requires a magnitude limit, unlike SkyBoT's cone search.
         "limit": f"{MPC_CHECKER_MAG_LIMIT:.1f}",
         "oc": info.observatory_code,
         "sort": "d",
@@ -206,7 +213,8 @@ def query_mpc_identification(info: ImageInfo, radius):
     }
 
     print(
-        f"Note: MPCHECKER requires a cut on the magnitude, currently set to V <= {MPC_CHECKER_MAG_LIMIT:.1f}...",
+        f"Note: MPChecker requires a magnitude cut, currently V <= "
+        f"{MPC_CHECKER_MAG_LIMIT:.1f}.",
         flush=True,
     )
     with requests.Session() as session:
@@ -224,6 +232,6 @@ def query_mpc_identification(info: ImageInfo, radius):
         )
         response.raise_for_status()
 
-    table = _mpchecker_table(response.text)
-    print(f"MPC MPChecker found {len(table)} small bodies.", flush=True)
+    table = _mpchecker_table(response.text, epoch)
+    print(f"MPC MPChecker found {len(table)} asteroids.", flush=True)
     return table

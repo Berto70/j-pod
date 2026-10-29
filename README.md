@@ -32,6 +32,19 @@ To use the pipeline you can proceed in two ways:
 
 **Note:** The default directory for the FITS files is `./data`. The default directory for the output files is `./output`; if `output` doesn't exist, it will be created automatically.
 
+### Choose the small-body provider
+The pipeline uses SkyBoT by default. To use MPC MPChecker instead, pass:
+```bash
+j-pod --provider mpc
+```
+Both providers'
+positions and tangent-plane rates are normalized to degrees and arcseconds per
+hour, respectively, before Horizons enrichment. Provider values and same-epoch
+Horizons comparison values are retained separately in the in-memory table;
+the saved CSV contains only the compact result columns.
+See the [pipeline guide](./docs/pipeline_guide.md) for the processing sequence,
+observatory-code selection, provider behavior, and output columns.
+
 ### 6. Update the package
 Navigate to the project directory. Pull the new/updated files from the remote repository (be sure that you don't have pending edits). Install again the package to update the version.
 ```bash
