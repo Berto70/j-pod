@@ -169,15 +169,3 @@ provider-versus-Horizons comparison columns remain available in the in-memory
 table but are intentionally omitted from the CSV to keep the saved table
 readable.
 
-The opt-in J75 integration test writes a separate wide comparison file,
-`output/tables/J75_provider_comparison.csv`; it does not change the normal
-compact results CSV. Run it from the repository root with:
-
-```bash
-JPOD_RUN_J75_PROVIDER_INTEGRATION=1 PYTHONPATH=. \
-  .venv/bin/python -m unittest discover -s tests -p test_providers.py -v
-```
-
-The comparison CSV has one row per normalized designation found by either
-provider, separate provider and same-epoch Horizons columns, each search
-epoch, the shared image exposure times, observer code, and search radius.
