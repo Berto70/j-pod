@@ -30,6 +30,7 @@ class ImageInfo:
     end_obs: Time             # end of the exposure (UTC)
     exptime: object           # exposure time (Quantity) or None
     time_source: str          # where the time was found
+    header_fwhm: float | None # FITS FWHM, assumed to be in pixels
 
 
 def load_image(fits_file: str, observatory_code = None, time_reference = None, date_obs = None, obscodes_json = None)-> ImageInfo:
@@ -56,11 +57,15 @@ def load_image(fits_file: str, observatory_code = None, time_reference = None, d
     obscodes = load_obscodes_safe(obscodes_json)
     code, code_source = get_observatory_code(header, observatory_code, obscodes)
     date_obs, start_obs, end_obs, exptime, time_source = get_obs_times(header, time_reference, date_obs)
+    header_fwhm = header.get("FWHM")
+    if header_fwhm is not None:
+        header_fwhm = float(header_fwhm)
 
     scale = proj_plane_pixel_scales(w.celestial)[0] * 3600
 
     return ImageInfo(data, w, nx, ny, center, corners, scale,
-                     code, code_source, date_obs, start_obs, end_obs, exptime, time_source)
+                     code, code_source, date_obs, start_obs, end_obs, exptime,
+                     time_source, header_fwhm)
 
 def describe_time(info: ImageInfo)->list:
     """Lines describing the observation time, for the terminal."""

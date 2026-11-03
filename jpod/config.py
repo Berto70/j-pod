@@ -10,9 +10,10 @@ MARGIN = 5 * u.arcmin
 # Columns of the results table, in this order
 OUTPUT_COLUMNS = [
     "Name", "class", "sub-class", "source",
-    "RA", "DEC", "RA_end", "DEC_end", "V", "H",
+    "RA", "DEC", "RA_end", "DEC_end", "V", "V_trailing", "H",
     "RA_cosdec_rate", "DEC_rate", "sky_speed",
-    "trail_length", "trail_length [px]",
+    "trail_length", "trail_length [px]", "trail_length / FWHM",
+    "trailing_loss",
     "SMAA_3sigma", "SMIA_3sigma", "LOV_PA", "ellipse_angle",
     "P_pos", "P_mag", "P_det", "detectable",
 ]

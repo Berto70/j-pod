@@ -18,6 +18,7 @@ from .image_geometry import (
 from .providers import query_mpc_identification, query_skybot
 from .plotting import plot_field, plot_cutouts
 from .detection import add_detection_probability
+from .trailing_loss import add_trailing_loss, compute_fwhm
 from .output import save_table_csv
 from .config import MARGIN, OUTPUT_COLUMNS, OBSCODES_JSON, ZOOM_HALF_SIZE
 
@@ -110,6 +111,8 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
         print(line)
     print()
     angle_north, angle_east, parity = image_orientation(info.wcs, info.center)
+    fwhm_pixels = compute_fwhm(info)
+    print(f"Stellar FWHM: {fwhm_pixels:.2f} pixels")
     print(
         f"At the image center: North points at {angle_north:.4f} deg, "
         f"East at {angle_east:.4f} deg (CCW from +x, 0 = right, 90 = up); "
@@ -146,6 +149,7 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
     add_ellipse_image_angle(table, info.wcs)
     table = filter_in_image(table, info)
     compute_trail_length(info, table)
+    add_trailing_loss(table, fwhm_pixels)
     print(f"\n{len(table)} objects overlap the image.")
     if len(table) == 0:
         return
