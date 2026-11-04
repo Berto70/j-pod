@@ -3,8 +3,9 @@
 import numpy as np
 import astropy.units as u
 from astropy.table import Column
-from scipy.ndimage import maximum_filter, median_filter
+from scipy.ndimage import maximum_filter
 from scipy.optimize import curve_fit
+from photutils.background import Background2D, MedianBackground
 
 from .image_geometry import ImageInfo
 
@@ -18,7 +19,18 @@ def compute_fwhm(image_info: ImageInfo) -> float:
         return float(header_fwhm)
 
     data = np.asarray(image_info.data, dtype=float)
-    background = median_filter(data, size=51, mode="reflect")
+
+    nan_mask = np.isnan(data)
+
+    bkg = Background2D(
+        data,
+        box_size = (50, 50),
+        filter_size=(3, 3),
+        mask = nan_mask, # exclude mask from background estimation
+        bkg_estimator=MedianBackground()
+    )
+    background = bkg.background
+
     image = data - background
     noise = 1.4826 * np.median(np.abs(image - np.median(image)))
     if not np.isfinite(noise) or noise <= 0:
@@ -40,6 +52,7 @@ def compute_fwhm(image_info: ImageInfo) -> float:
 
     fitted_sources = []
     image_height, image_width = image.shape
+    time_start = time.time()
     for y, x in peak_positions:
         # A 11x11 cutout is needed to fit the full PSF, including its wings.
         if x < 5 or y < 5 or x >= image_width - 5 or y >= image_height - 5:
@@ -79,7 +92,8 @@ def compute_fwhm(image_info: ImageInfo) -> float:
         if snr < 20 or elongation > 1.3:
             continue
         fitted_sources.append((x, y, fwhm))
-
+    time_end = time.time()
+    print(time_end - time_start, "seconds to fit")
     if not fitted_sources:
         raise RuntimeError("No unsaturated, high-SNR stellar profiles were found.")
 
