@@ -22,12 +22,15 @@ def compute_fwhm(image_info: ImageInfo) -> float:
     data = np.asarray(image_info.data, dtype=float)
 
     nan_mask = np.isnan(data)
+    if np.any(nan_mask):
+        fill_val = np.nanmedian(data)
+        data[nan_mask] = fill_val
 
     bkg = Background2D(
         data,
         box_size = (50, 50),
         filter_size=(3, 3),
-        mask = nan_mask, # exclude mask from background estimation
+        # mask = nan_mask, # exclude mask from background estimation
         bkg_estimator=MedianBackground()
     )
     background = bkg.background
@@ -36,6 +39,8 @@ def compute_fwhm(image_info: ImageInfo) -> float:
     noise = 1.4826 * np.median(np.abs(image - np.median(image)))
     if not np.isfinite(noise) or noise <= 0:
         raise RuntimeError("Could not estimate image noise for stellar detection.")
+
+    # image[np.isnan(image)] = 0.0
 
     # 1. Find local maxima whose background-subtracted peak exceeds 5 sigma.
     peak_mask = (image == maximum_filter(image, size=9)) & (image > 5 * noise)
@@ -81,6 +86,13 @@ def compute_fwhm(image_info: ImageInfo) -> float:
         lambda1 = 0.5 * (mu20 + mu02 + disc) # semi-major axis variance
         lambda2 = 0.5 * (mu20 + mu02 - disc) # semi-minor axis variance
 
+        lambda1 = max(0.0, lambda1) # prevents NaNs in sqrt
+        lambda2 = max(0.0, lambda2)
+
+        # reject 1D profiles or invalid shapes
+        if lambda1 <= 0 or lambda2 <=0:
+            continue
+
         sigma_major = np.sqrt(lambda1)
         sigma_minor = np.sqrt(lambda2)
 
@@ -112,6 +124,10 @@ def compute_fwhm(image_info: ImageInfo) -> float:
 
     # 4. Iteratively reject extended outliers, then take the median stellar FWHM.
     for _ in range(3):
+
+        if stellar_fwhm.size == 0:
+            break
+
         median_fwhm = np.median(stellar_fwhm)
         scatter = 1.4826 * np.median(np.abs(stellar_fwhm - median_fwhm))
         if scatter == 0:
