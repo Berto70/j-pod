@@ -5,6 +5,7 @@ import astropy.units as u
 from astropy.table import Column
 from scipy.ndimage import maximum_filter
 from scipy.optimize import curve_fit
+from scipy.spatial.distance import cdist
 from photutils.background import Background2D, MedianBackground
 
 from .image_geometry import ImageInfo
@@ -40,73 +41,72 @@ def compute_fwhm(image_info: ImageInfo) -> float:
     peak_mask = (image == maximum_filter(image, size=9)) & (image > 5 * noise)
     peak_positions = np.argwhere(peak_mask)
 
-    def gaussian(coords, amplitude, x0, y0, sigma_major, sigma_minor, theta, offset):
-        x, y = coords
-        dx = x - x0
-        dy = y - y0
-        major = dx * np.cos(theta) + dy * np.sin(theta)
-        minor = -dx * np.sin(theta) + dy * np.cos(theta)
-        return offset + amplitude * np.exp(
-            -0.5 * ((major / sigma_major) ** 2 + (minor / sigma_minor) ** 2)
-        )
+    # we only need the median FWHM (see Vernes+2012 sec 2.2)
+    # --> we fit only 100 brightest stars
+    peak_values = image[peak_mask]
+    sorted_idx = np.argsort(peak_values)[::-1]
+    peak_positions = peak_positions[sorted_idx][:100]
 
     fitted_sources = []
     image_height, image_width = image.shape
-    time_start = time.time()
+
+    yy, xx = np.indices((11,11))
+
     for y, x in peak_positions:
-        # A 11x11 cutout is needed to fit the full PSF, including its wings.
+        # A 11x11 cutout is needed, including its wings.
         if x < 5 or y < 5 or x >= image_width - 5 or y >= image_height - 5:
             continue
         cutout = image[y - 5:y + 6, x - 5:x + 6]
+
         yy, xx = np.indices(cutout.shape)
-        try:
-            parameters, _ = curve_fit(
-                gaussian,
-                (xx.ravel(), yy.ravel()),
-                cutout.ravel(),
-                p0=(cutout.max(), 5, 5, 1.5, 1.5, 0, 0),
-                bounds=(
-                    [0, 3, 3, 0.4, 0.4, -np.pi / 2, -np.inf],
-                    [np.inf, 7, 7, 4.5, 4.5, np.pi / 2, np.inf],
-                ),
-                maxfev=3000,
-            )
-        except (RuntimeError, ValueError):
+        
+        # 2nd.order moments provide exact solution for Gaussian widths (see Vernes+2012 sec 2.2)
+        total_flux = np.sum(cutout)
+        if total_flux <= 0:
             continue
 
-        amplitude, _, _, sigma_major, sigma_minor, theta, _ = parameters
-        if not np.all(np.isfinite(parameters)) or amplitude <= 0:
-            continue
+        x_c = np.sum(xx * cutout) / total_flux
+        y_c = np.sum(yy * cutout) / total_flux
+
+        dx = xx - x_c
+        dy = yy - y_c
+        # 2nd order moments
+        mu20 = np.sum(dx**2 * cutout) / total_flux
+        mu02 = np.sum(dy**2 * cutout) / total_flux
+        mu11 = np.sum(dx * dy * cutout) / total_flux
+
+        # eigenvalues of the covariance matrix
+        diff = mu20 - mu02
+        disc = np.sqrt(diff**2 + 4 * mu11**2)
+        lambda1 = 0.5 * (mu20 + mu02 + disc) # semi-major axis variance
+        lambda2 = 0.5 * (mu20 + mu02 - disc) # semi-minor axis variance
+
+        sigma_major = np.sqrt(lambda1)
+        sigma_minor = np.sqrt(lambda2)
+
+        # geometric mean 
         fwhm = 2.35482 * np.sqrt(sigma_major * sigma_minor)
         elongation = max(sigma_major, sigma_minor) / min(sigma_major, sigma_minor)
 
-        # 2. Keep high-SNR, compact, round profiles; reject obvious elongation.
-        dx = xx - parameters[1]
-        dy = yy - parameters[2]
-        major = dx * np.cos(theta) + dy * np.sin(theta)
-        minor = -dx * np.sin(theta) + dy * np.cos(theta)
-        profile = np.exp(
-            -0.5 * ((major / sigma_major) ** 2 + (minor / sigma_minor) ** 2)
-        )
-        snr = amplitude * np.sqrt(np.sum(profile**2)) / noise
+        # for a 2D-Gaussian, optimal SNR --> tot_flux / (2*noise*sqrt(pi*sigma_x*sigma_y))
+        snr = total_flux / (2 * noise * np.sqrt(np.pi * sigma_major * sigma_minor))
         if snr < 20 or elongation > 1.3:
             continue
         fitted_sources.append((x, y, fwhm))
-    time_end = time.time()
-    print(time_end - time_start, "seconds to fit")
+        
     if not fitted_sources:
         raise RuntimeError("No unsaturated, high-SNR stellar profiles were found.")
 
     # 3. Reject blends: nearby 5-sigma peaks can distort each other's fitted PSF.
     positions = np.asarray([(source[0], source[1]) for source in fitted_sources])
     widths = np.asarray([source[2] for source in fitted_sources])
-    separations = np.hypot(
-        positions[:, np.newaxis, 0] - positions[np.newaxis, :, 0],
-        positions[:, np.newaxis, 1] - positions[np.newaxis, :, 1],
-    )
+
+    separations = cdist(positions, positions, metric="euclidean")
+
     blend_limit = 2 * np.maximum(widths[:, np.newaxis], widths[np.newaxis, :])
     blended = np.any((separations < blend_limit) & (separations > 0), axis=1)
     stellar_fwhm = widths[~blended]
+    
     if stellar_fwhm.size == 0:
         raise RuntimeError("No isolated stellar profiles remain after blend rejection.")
 
@@ -120,8 +120,10 @@ def compute_fwhm(image_info: ImageInfo) -> float:
         if np.all(selected):
             break
         stellar_fwhm = stellar_fwhm[selected]
+
     if stellar_fwhm.size == 0:
         raise RuntimeError("No stellar FWHM measurements remain after outlier rejection.")
+    
     return float(np.median(stellar_fwhm))
 
 
