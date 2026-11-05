@@ -21,3 +21,5 @@ build
 .mypy_cache
 .conda
 .tests/
+jpl_horizons_cache.db
+*.db

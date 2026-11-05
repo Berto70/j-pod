@@ -84,6 +84,8 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pmin", type=float, default=0.05, help="Minimum detection probability")
     parser.add_argument("--magnify", type=float, default=1.0, help="Magnification factor for the ellipses in the plots")
 
+    parser.add_argument("--no-cache", action="store_true", default=False, help="Disable local cache and force fresh API queries.")
+
     parser.add_argument("--savefig", action="store_true", default=False, help="Save the plots as PNG files")
     parser.add_argument("--printtable", action="store_true", default=False, help="Print the complete table of results")
 
@@ -144,7 +146,9 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
     # 4. Enrich candidates with Horizons data, then keep the image-overlapping
     #    objects and measure their projected trail lengths.
     table = enrich_with_horizons(
-        table, info.start_obs, info.end_obs, info.observatory_code
+        table,
+        info.start_obs, info.end_obs, info.observatory_code,
+        use_cache = not args.no_cache
     )
     add_ellipse_image_angle(table, info.wcs)
     table = filter_in_image(table, info)
