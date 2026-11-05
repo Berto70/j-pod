@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 
 from . import __version__
-from .horizons import enrich_with_horizons
+from .horizons import enrich_with_horizons, set_cache_db
 from .image_geometry import (
     add_ellipse_image_angle,
     filter_in_image,
@@ -62,14 +62,14 @@ def create_parser() -> argparse.ArgumentParser:
 
     # project_root = Path(__file__).resolve().parent.parent
 
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter)
 
     parser.add_argument("-w", "--workdir", type=Path, default=None, help="Working directory. Defaults to the current folder")
 
     parser.add_argument("-d", "--dir", type=Path, default=None, help="FITS files directory")
-    parser.add_argument("-f", "--file", type=Path, default=None, help="FITS file name with extension. Use if you want to process a single file." 
-                        +" Default parent directory is the data directory")
-    parser.add_argument("-outdir", "--output_dir", type=Path, default=None, help="Output directory")
+    parser.add_argument("-f", "--file", type=Path, default=None, help="FITS file name with extension. Use if you want to process a single file.\n" 
+                        +"Default parent directory is the data directory")
+    parser.add_argument("--output_dir", type=Path, default=None, help="Output directory")
 
     parser.add_argument("-obs", "--observatory", type=str, default=None,
                         help="Fallback observatory code when header/site lookup finds none")
@@ -85,6 +85,9 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--magnify", type=float, default=1.0, help="Magnification factor for the ellipses in the plots")
 
     parser.add_argument("--no-cache", action="store_true", default=False, help="Disable local cache and force fresh API queries.")
+    parser.add_argument("--cache-dir", type=Path, default=None, help="Relative path of the JPL cache DB.\n" 
+                        + "Specify the file name too: the extension must be .db.\n"
+                        + "Defaults to <workdir>/database/jpl_horizons_cache.db")
 
     parser.add_argument("--savefig", action="store_true", default=False, help="Save the plots as PNG files")
     parser.add_argument("--printtable", action="store_true", default=False, help="Print the complete table of results")
@@ -230,11 +233,18 @@ def main():
 
     workdir = args.workdir.resolve() if args.workdir else Path.cwd()
 
+    if args.cache_dir is not None:
+        cache_db = resolve_path(args.cache_dir, workdir)
+    else:
+        (workdir / "database").mkdir(exist_ok=True) # create if not exist
+        cache_db = workdir / "database/jpl_horizons_cache.db"
+    set_cache_db(cache_db)
+
     fits_dir = resolve_path(args.dir, workdir, default_subdir="data")
     output_dir = resolve_path(args.output_dir, workdir, default_subdir="output")
 
-    output_dir.mkdir(parents=True, exist_ok=True) # create is not exist
-    (output_dir / "plots").mkdir(exist_ok=True) # create is not exist
+    output_dir.mkdir(parents=True, exist_ok=True) # create if not exist
+    (output_dir / "plots").mkdir(exist_ok=True) # create if not exist
     (output_dir / "tables").mkdir(exist_ok=True)
 
     fits_files = [fits_dir / args.file] if args.file else sorted(fits_dir.glob("*.fits"))
