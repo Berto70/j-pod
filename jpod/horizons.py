@@ -19,7 +19,7 @@ from .providers.schema import DEC_RATE_COLUMN, RA_RATE_COLUMN, RATE_UNIT, sky_sp
 
 JPL_CACHE_DB = Path("database/jpl_horizons_cache.db") # default is <working dir>/database/jpl_horizons_cache.db
 
-def _set_cache_db(path) -> None:
+def set_cache_db(path) -> None:
 
     global JPL_CACHE_DB # alter the global variable to point to the new cache database path
     JPL_CACHE_DB = Path(path)
@@ -202,6 +202,15 @@ def query_jpl_horizons(identifier, epochs, location, use_cache=True) -> dict[str
     # MPChecker rounds its epoch, which can move it slightly after the image time.
     unique_epochs.sort(key=lambda epoch: float(epoch.jd))
 
+    epochs_jd = [float(epoch.jd) for epoch in unique_epochs]
+
+    # check cache
+    if use_cache:
+        _init_jpl_cache()
+        cached_data = _get_jpl_cache(identifier, epochs_jd, location)
+        if cached_data is not None:
+            return cached_data
+
     ephemeris = Horizons(
         id=identifier,
         id_type="smallbody",
@@ -224,7 +233,8 @@ def query_jpl_horizons(identifier, epochs, location, use_cache=True) -> dict[str
 
     theta = _table_value(ephemeris, "Theta_3sigma", u.deg, start_row)
     lov_pa = None if theta is None else (90.0 - theta) % 180.0
-    return {
+
+    results = {
         "H": _table_value(ephemeris, "H", u.mag, start_row),
         "SMAA_3sigma": _table_value(ephemeris, "SMAA_3sigma", u.arcsec, start_row),
         "SMIA_3sigma": _table_value(ephemeris, "SMIA_3sigma", u.arcsec, start_row),
@@ -244,6 +254,10 @@ def query_jpl_horizons(identifier, epochs, location, use_cache=True) -> dict[str
         "sky_speed_horizons": comparison_speed,
     }
 
+    if use_cache:
+        _save_jpl_cache(identifier, epochs_jd, location, results)
+    
+    return results
 
 JPL_COLUMNS = (
     ("H", u.mag),
