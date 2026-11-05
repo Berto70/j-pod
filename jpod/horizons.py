@@ -2,15 +2,65 @@
 
 import re
 
-import astropy.units as u
 import numpy as np
+
+from astropy.table import Table
+import astropy.units as u
 from astropy.time import Time
 from astroquery.jplhorizons import Horizons
+
+# for local database caching of Horizons queries
+import json
+import sqlite3
+from pathlib import Path
 
 from .providers.schema import DEC_RATE_COLUMN, RA_RATE_COLUMN, RATE_UNIT, sky_speed
 
 
-def _usable_text(value):
+JPL_CACHE_DB = Path("database/jpl_horizons_cache.db") # default is <working dir>/database/jpl_horizons_cache.db
+
+def set_cache_db(path) -> None:
+
+    global JPL_CACHE_DB # alter the global variable to point to the new cache database path
+    JPL_CACHE_DB = Path(path)
+    JPL_CACHE_DB.parent.mkdir(parents=True, exist_ok=True) # ensure the parent directory exists
+
+def _debug_where_is_my_db() -> None:
+    print(JPL_CACHE_DB)
+
+def _init_jpl_cache() -> None:
+    with sqlite3.connect(JPL_CACHE_DB) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS horizons_cache (
+                identifier TEXT NOT NULL,
+                epochs_jd TEXT NOT NULL,
+                location TEXT NOT NULL,
+                data TEXT NOT NULL,
+                PRIMARY KEY (identifier, epochs_jd, location)
+            )
+            """
+        )
+
+def _get_jpl_cache(identifier, epochs_jd, location) -> dict | None:
+    epochs_key = json.dumps(epochs_jd)
+    with sqlite3.connect(JPL_CACHE_DB) as conn:
+        cur = conn.execute(
+            "SELECT data FROM horizons_cache WHERE identifier=? AND epochs_jd=? AND location=?",
+            (str(identifier), str(epochs_key), str(location)),
+        )
+        row = cur.fetchone()
+        return json.loads(row[0]) if row else None
+
+def _save_jpl_cache(identifier, epochs_jd, location, data) -> None:
+    epochs_key = json.dumps(epochs_jd)
+    with sqlite3.connect(JPL_CACHE_DB) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO horizons_cache (identifier, epochs_jd, location, data) VALUES (?, ?, ?, ?)",
+            (str(identifier), str(epochs_key), str(location), json.dumps(data)),
+        )
+
+def _usable_text(value) -> str | None:
     """Return a cleaned catalogue value, or None for a missing value."""
     if value is None or np.ma.is_masked(value):
         return None
@@ -19,8 +69,101 @@ def _usable_text(value):
         return None
     return text
 
+def _table_value(table, column, unit=None, row=0) -> float | None:
+    """Return one finite scalar from a Horizons table, converted to ``unit``."""
+    if column not in table.colnames or len(table) == 0 or row >= len(table):
+        return None
+    column_data = table[column]
+    value = column_data[row]
+    if value is None or np.ma.is_masked(value):
+        return None
+    try:
+        if unit is not None and hasattr(value, "to_value"):
+            result = float(value.to_value(unit))
+        elif unit is not None and getattr(column_data, "unit", None) is not None:
+            result = float((value * column_data.unit).to_value(unit))
+        else:
+            result = float(value)
+    except (TypeError, ValueError, u.UnitConversionError):
+        return None
+    return result if np.isfinite(result) else None
 
-def jpl_identifiers(table, row):
+def _rate_arcsec_per_hour(table, column, row) -> float | None:
+    """Read a Horizons angular rate in the shared arcsec/hour convention."""
+    if column not in table.colnames or row >= len(table):
+        return None
+    column_data = table[column]
+    value = column_data[row]
+    if value is None or np.ma.is_masked(value):
+        return None
+    unit = getattr(column_data, "unit", None) or RATE_UNIT
+    try:
+        quantity = value if hasattr(value, "to_value") else value * unit
+        result = float(quantity.to_value(RATE_UNIT))
+    except (TypeError, ValueError, u.UnitConversionError):
+        return None
+    return result if np.isfinite(result) else None
+
+def _row_for_epoch(epochs, epoch) -> int:
+    """Find a queried Horizons row corresponding to an exact requested epoch."""
+    for row, queried_epoch in enumerate(epochs):
+        if abs((queried_epoch - epoch).to_value(u.s)) < 1e-5:
+            return row
+    raise ValueError(f"Horizons query did not include epoch {epoch.utc.isot}")
+
+def _rates_at(ephemeris, row) -> tuple[float | None, float | None, float | None]:
+    ra_rate_column = "RA_rate" if "RA_rate" in ephemeris.colnames else "RAcosD_rate"
+    ra_rate = _rate_arcsec_per_hour(ephemeris, ra_rate_column, row)
+    dec_rate = _rate_arcsec_per_hour(ephemeris, "DEC_rate", row)
+    # Horizons' RA rate is already the eastward tangent-plane component.
+    speed = (
+        float(
+            sky_speed(ra_rate * RATE_UNIT, dec_rate * RATE_UNIT).to_value(RATE_UNIT)
+        )
+        if ra_rate is not None and dec_rate is not None
+        else None
+    )
+    return ra_rate, dec_rate, speed
+
+def _positions_at(ephemeris, row) -> tuple[float | None, float | None]:
+    return (
+        _table_value(ephemeris, "RA", u.deg, row),
+        _table_value(ephemeris, "DEC", u.deg, row),
+    )
+
+def _end_from_rates(ra_deg, dec_deg, ra_cosdec_rate, dec_rate, exposure_seconds) -> tuple[np.ndarray, np.ndarray]:
+    """Project tangent-plane rates across an exposure to RA/DEC coordinates."""
+    exposure = exposure_seconds * u.s
+    eastward_change = (
+        np.asarray(ra_cosdec_rate) * RATE_UNIT * exposure
+    ).to_value(u.deg)
+    northward_change = (
+        np.asarray(dec_rate) * RATE_UNIT * exposure
+    ).to_value(u.deg)
+    ra_end = np.asarray(ra_deg) + eastward_change / np.cos(np.radians(dec_deg))
+    dec_end = np.asarray(dec_deg) + northward_change
+    return ra_end, dec_end
+
+def _describe(jpl_data) -> str:
+    """Summarize Horizons values for the progress log."""
+    h_text = (
+        f"{jpl_data['H']:.3f}" if jpl_data["H"] is not None else "not available"
+    )
+    if all(
+        jpl_data[key] is not None
+        for key in ("SMAA_3sigma", "SMIA_3sigma", "THETA_3sigma", "LOV_PA")
+    ):
+        ellipse_text = (
+            f"3-sigma ellipse = {jpl_data['SMAA_3sigma']:.3f} x "
+            f"{jpl_data['SMIA_3sigma']:.3f} arcsec, "
+            f"THETA_3sigma = {jpl_data['THETA_3sigma']:.3f} deg, "
+            f"LOV PA = {jpl_data['LOV_PA']:.3f} deg"
+        )
+    else:
+        ellipse_text = "uncertainty ellipse not available"
+    return f"H = {h_text}; {ellipse_text}"
+
+def jpl_identifiers(table, row) -> list[str]:
     """Build JPL query identifiers, preferring the catalog's asteroid number."""
     identifiers = []
     if "Number" in table.colnames:
@@ -44,75 +187,7 @@ def jpl_identifiers(table, row):
         identifiers.append(name)
     return list(dict.fromkeys(identifiers))
 
-
-def _table_value(table, column, unit=None, row=0):
-    """Return one finite scalar from a Horizons table, converted to ``unit``."""
-    if column not in table.colnames or len(table) == 0 or row >= len(table):
-        return None
-    column_data = table[column]
-    value = column_data[row]
-    if value is None or np.ma.is_masked(value):
-        return None
-    try:
-        if unit is not None and hasattr(value, "to_value"):
-            result = float(value.to_value(unit))
-        elif unit is not None and getattr(column_data, "unit", None) is not None:
-            result = float((value * column_data.unit).to_value(unit))
-        else:
-            result = float(value)
-    except (TypeError, ValueError, u.UnitConversionError):
-        return None
-    return result if np.isfinite(result) else None
-
-
-def _rate_arcsec_per_hour(table, column, row):
-    """Read a Horizons angular rate in the shared arcsec/hour convention."""
-    if column not in table.colnames or row >= len(table):
-        return None
-    column_data = table[column]
-    value = column_data[row]
-    if value is None or np.ma.is_masked(value):
-        return None
-    unit = getattr(column_data, "unit", None) or RATE_UNIT
-    try:
-        quantity = value if hasattr(value, "to_value") else value * unit
-        result = float(quantity.to_value(RATE_UNIT))
-    except (TypeError, ValueError, u.UnitConversionError):
-        return None
-    return result if np.isfinite(result) else None
-
-
-def _row_for_epoch(epochs, epoch):
-    """Find a queried Horizons row corresponding to an exact requested epoch."""
-    for row, queried_epoch in enumerate(epochs):
-        if abs((queried_epoch - epoch).to_value(u.s)) < 1e-5:
-            return row
-    raise ValueError(f"Horizons query did not include epoch {epoch.utc.isot}")
-
-
-def _rates_at(ephemeris, row):
-    ra_rate_column = "RA_rate" if "RA_rate" in ephemeris.colnames else "RAcosD_rate"
-    ra_rate = _rate_arcsec_per_hour(ephemeris, ra_rate_column, row)
-    dec_rate = _rate_arcsec_per_hour(ephemeris, "DEC_rate", row)
-    # Horizons' RA rate is already the eastward tangent-plane component.
-    speed = (
-        float(
-            sky_speed(ra_rate * RATE_UNIT, dec_rate * RATE_UNIT).to_value(RATE_UNIT)
-        )
-        if ra_rate is not None and dec_rate is not None
-        else None
-    )
-    return ra_rate, dec_rate, speed
-
-
-def _positions_at(ephemeris, row):
-    return (
-        _table_value(ephemeris, "RA", u.deg, row),
-        _table_value(ephemeris, "DEC", u.deg, row),
-    )
-
-
-def query_jpl_horizons(identifier, epochs, location):
+def query_jpl_horizons(identifier, epochs, location, use_cache=True) -> dict[str, float | None]:
     """Query Horizons for comparison-epoch and exposure endpoint values.
 
     The first epoch is the provider's discovery epoch; the next two are the
@@ -126,6 +201,15 @@ def query_jpl_horizons(identifier, epochs, location):
             unique_epochs.append(epoch)
     # MPChecker rounds its epoch, which can move it slightly after the image time.
     unique_epochs.sort(key=lambda epoch: float(epoch.jd))
+
+    epochs_jd = [float(epoch.jd) for epoch in unique_epochs]
+
+    # check cache
+    if use_cache:
+        _init_jpl_cache()
+        cached_data = _get_jpl_cache(identifier, epochs_jd, location)
+        if cached_data is not None:
+            return cached_data
 
     ephemeris = Horizons(
         id=identifier,
@@ -149,7 +233,8 @@ def query_jpl_horizons(identifier, epochs, location):
 
     theta = _table_value(ephemeris, "Theta_3sigma", u.deg, start_row)
     lov_pa = None if theta is None else (90.0 - theta) % 180.0
-    return {
+
+    results = {
         "H": _table_value(ephemeris, "H", u.mag, start_row),
         "SMAA_3sigma": _table_value(ephemeris, "SMAA_3sigma", u.arcsec, start_row),
         "SMIA_3sigma": _table_value(ephemeris, "SMIA_3sigma", u.arcsec, start_row),
@@ -169,6 +254,10 @@ def query_jpl_horizons(identifier, epochs, location):
         "sky_speed_horizons": comparison_speed,
     }
 
+    if use_cache:
+        _save_jpl_cache(identifier, epochs_jd, location, results)
+    
+    return results
 
 JPL_COLUMNS = (
     ("H", u.mag),
@@ -189,28 +278,7 @@ COMPARISON_COLUMNS = (
     ("sky_speed_horizons", RATE_UNIT),
 )
 
-
-def _describe(jpl_data):
-    """Summarize Horizons values for the progress log."""
-    h_text = (
-        f"{jpl_data['H']:.3f}" if jpl_data["H"] is not None else "not available"
-    )
-    if all(
-        jpl_data[key] is not None
-        for key in ("SMAA_3sigma", "SMIA_3sigma", "THETA_3sigma", "LOV_PA")
-    ):
-        ellipse_text = (
-            f"3-sigma ellipse = {jpl_data['SMAA_3sigma']:.3f} x "
-            f"{jpl_data['SMIA_3sigma']:.3f} arcsec, "
-            f"THETA_3sigma = {jpl_data['THETA_3sigma']:.3f} deg, "
-            f"LOV PA = {jpl_data['LOV_PA']:.3f} deg"
-        )
-    else:
-        ellipse_text = "uncertainty ellipse not available"
-    return f"H = {h_text}; {ellipse_text}"
-
-
-def enrich_with_horizons(table, start_obs, end_obs, observatory_code):
+def enrich_with_horizons(table, start_obs, end_obs, observatory_code, use_cache=True) -> Table:
     """Keep provider values, add comparable Horizons values, and enrich the table.
 
     The un-suffixed position and rate columns remain the values used by the
@@ -285,7 +353,8 @@ def enrich_with_horizons(table, start_obs, end_obs, observatory_code):
             try:
                 if identifier not in cache:
                     cache[identifier] = query_jpl_horizons(
-                        identifier, epochs, observatory_code
+                        identifier, epochs, observatory_code,
+                        use_cache=use_cache
                     )
                 jpl_data = cache[identifier]
                 break
@@ -335,17 +404,3 @@ def enrich_with_horizons(table, start_obs, end_obs, observatory_code):
         "Provider and Horizons comparison values are retained in separate columns."
     )
     return table
-
-
-def _end_from_rates(ra_deg, dec_deg, ra_cosdec_rate, dec_rate, exposure_seconds):
-    """Project tangent-plane rates across an exposure to RA/DEC coordinates."""
-    exposure = exposure_seconds * u.s
-    eastward_change = (
-        np.asarray(ra_cosdec_rate) * RATE_UNIT * exposure
-    ).to_value(u.deg)
-    northward_change = (
-        np.asarray(dec_rate) * RATE_UNIT * exposure
-    ).to_value(u.deg)
-    ra_end = np.asarray(ra_deg) + eastward_change / np.cos(np.radians(dec_deg))
-    dec_end = np.asarray(dec_deg) + northward_change
-    return ra_end, dec_end
