@@ -28,6 +28,38 @@ def _set_cache_db(path) -> None:
 def _debug_where_is_my_db() -> None:
     print(JPL_CACHE_DB)
 
+def _init_jpl_cache() -> None:
+    with sqlite3.connect(JPL_CACHE_DB) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS horizons_cache (
+                identifier TEXT NOT NULL,
+                epochs_jd TEXT NOT NULL,
+                location TEXT NOT NULL,
+                data TEXT NOT NULL,
+                PRIMARY KEY (identifier, epochs_jd, location)
+            )
+            """
+        )
+
+def _get_jpl_cache(identifier, epochs_jd, location) -> dict | None:
+    epochs_key = json.dumps(epochs_jd)
+    with sqlite3.connect(JPL_CACHE_DB) as conn:
+        cur = conn.execute(
+            "SELECT data FROM horizons_cache WHERE identifier=? AND epochs_jd=? AND location=?",
+            (str(identifier), str(epochs_key), str(location)),
+        )
+        row = cur.fetchone()
+        return json.loads(row[0]) if row else None
+
+def _save_jpl_cache(identifier, epochs_jd, location, data) -> None:
+    epochs_key = json.dumps(epochs_jd)
+    with sqlite3.connect(JPL_CACHE_DB) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO horizons_cache (identifier, epochs_jd, location, data) VALUES (?, ?, ?, ?)",
+            (str(identifier), str(epochs_key), str(location), json.dumps(data)),
+        )
+
 def _usable_text(value) -> str | None:
     """Return a cleaned catalogue value, or None for a missing value."""
     if value is None or np.ma.is_masked(value):
