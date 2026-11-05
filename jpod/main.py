@@ -154,13 +154,6 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
     if len(table) == 0:
         return
 
-    # Filter out objects with excessively large uncertainties (e.g. > 10 arcmin)
-    #max_uncertainty = 600 * u.arcsec 
-    #smaa = u.Quantity(table["SMAA_3sigma"])
-    #threshold = (smaa < max_uncertainty) | np.isnan(smaa.value)
-    #table = table[threshold]
-    #print(f"\nFiltered out {np.sum(~threshold)} objects with excessively large uncertainties.")
-
     # 5. Combine positional and magnitude probabilities into the final score.
     add_detection_probability(table, info, args.vlim, args.sigmav)
     survivors = np.asarray(table["P_det"], dtype=float) >= args.pmin

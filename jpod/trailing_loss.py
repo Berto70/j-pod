@@ -40,8 +40,6 @@ def compute_fwhm(image_info: ImageInfo) -> float:
     if not np.isfinite(noise) or noise <= 0:
         raise RuntimeError("Could not estimate image noise for stellar detection.")
 
-    # image[np.isnan(image)] = 0.0
-
     # 1. Find local maxima whose background-subtracted peak exceeds 5 sigma.
     peak_mask = (image == maximum_filter(image, size=9)) & (image > 5 * noise)
     peak_positions = np.argwhere(peak_mask)
