@@ -2,15 +2,33 @@
 
 import re
 
-import astropy.units as u
 import numpy as np
+
+from astropy.table import Table
+import astropy.units as u
 from astropy.time import Time
 from astroquery.jplhorizons import Horizons
+
+# for local database caching of Horizons queries
+import json
+import sqlite3
+from pathlib import Path
 
 from .providers.schema import DEC_RATE_COLUMN, RA_RATE_COLUMN, RATE_UNIT, sky_speed
 
 
-def _usable_text(value):
+JPL_CACHE_DB = Path("database/jpl_horizons_cache.db") # default is <working dir>/database/jpl_horizons_cache.db
+
+def _set_cache_db(path) -> None:
+
+    global JPL_CACHE_DB # alter the global variable to point to the new cache database path
+    JPL_CACHE_DB = Path(path)
+    JPL_CACHE_DB.parent.mkdir(parents=True, exist_ok=True) # ensure the parent directory exists
+
+def _debug_where_is_my_db() -> None:
+    print(JPL_CACHE_DB)
+
+def _usable_text(value) -> str | None:
     """Return a cleaned catalogue value, or None for a missing value."""
     if value is None or np.ma.is_masked(value):
         return None
@@ -19,7 +37,7 @@ def _usable_text(value):
         return None
     return text
 
-def _table_value(table, column, unit=None, row=0):
+def _table_value(table, column, unit=None, row=0) -> float | None:
     """Return one finite scalar from a Horizons table, converted to ``unit``."""
     if column not in table.colnames or len(table) == 0 or row >= len(table):
         return None
@@ -38,7 +56,7 @@ def _table_value(table, column, unit=None, row=0):
         return None
     return result if np.isfinite(result) else None
 
-def _rate_arcsec_per_hour(table, column, row):
+def _rate_arcsec_per_hour(table, column, row) -> float | None:
     """Read a Horizons angular rate in the shared arcsec/hour convention."""
     if column not in table.colnames or row >= len(table):
         return None
@@ -54,14 +72,14 @@ def _rate_arcsec_per_hour(table, column, row):
         return None
     return result if np.isfinite(result) else None
 
-def _row_for_epoch(epochs, epoch):
+def _row_for_epoch(epochs, epoch) -> int:
     """Find a queried Horizons row corresponding to an exact requested epoch."""
     for row, queried_epoch in enumerate(epochs):
         if abs((queried_epoch - epoch).to_value(u.s)) < 1e-5:
             return row
     raise ValueError(f"Horizons query did not include epoch {epoch.utc.isot}")
 
-def _rates_at(ephemeris, row):
+def _rates_at(ephemeris, row) -> tuple[float | None, float | None, float | None]:
     ra_rate_column = "RA_rate" if "RA_rate" in ephemeris.colnames else "RAcosD_rate"
     ra_rate = _rate_arcsec_per_hour(ephemeris, ra_rate_column, row)
     dec_rate = _rate_arcsec_per_hour(ephemeris, "DEC_rate", row)
@@ -75,13 +93,13 @@ def _rates_at(ephemeris, row):
     )
     return ra_rate, dec_rate, speed
 
-def _positions_at(ephemeris, row):
+def _positions_at(ephemeris, row) -> tuple[float | None, float | None]:
     return (
         _table_value(ephemeris, "RA", u.deg, row),
         _table_value(ephemeris, "DEC", u.deg, row),
     )
 
-def _end_from_rates(ra_deg, dec_deg, ra_cosdec_rate, dec_rate, exposure_seconds):
+def _end_from_rates(ra_deg, dec_deg, ra_cosdec_rate, dec_rate, exposure_seconds) -> tuple[np.ndarray, np.ndarray]:
     """Project tangent-plane rates across an exposure to RA/DEC coordinates."""
     exposure = exposure_seconds * u.s
     eastward_change = (
@@ -94,7 +112,7 @@ def _end_from_rates(ra_deg, dec_deg, ra_cosdec_rate, dec_rate, exposure_seconds)
     dec_end = np.asarray(dec_deg) + northward_change
     return ra_end, dec_end
 
-def _describe(jpl_data):
+def _describe(jpl_data) -> str:
     """Summarize Horizons values for the progress log."""
     h_text = (
         f"{jpl_data['H']:.3f}" if jpl_data["H"] is not None else "not available"
@@ -113,8 +131,7 @@ def _describe(jpl_data):
         ellipse_text = "uncertainty ellipse not available"
     return f"H = {h_text}; {ellipse_text}"
 
-
-def jpl_identifiers(table, row):
+def jpl_identifiers(table, row) -> list[str]:
     """Build JPL query identifiers, preferring the catalog's asteroid number."""
     identifiers = []
     if "Number" in table.colnames:
@@ -138,7 +155,7 @@ def jpl_identifiers(table, row):
         identifiers.append(name)
     return list(dict.fromkeys(identifiers))
 
-def query_jpl_horizons(identifier, epochs, location, use_cache=True):
+def query_jpl_horizons(identifier, epochs, location, use_cache=True) -> dict[str, float | None]:
     """Query Horizons for comparison-epoch and exposure endpoint values.
 
     The first epoch is the provider's discovery epoch; the next two are the
@@ -215,7 +232,7 @@ COMPARISON_COLUMNS = (
     ("sky_speed_horizons", RATE_UNIT),
 )
 
-def enrich_with_horizons(table, start_obs, end_obs, observatory_code, use_cache=True):
+def enrich_with_horizons(table, start_obs, end_obs, observatory_code, use_cache=True) -> Table:
     """Keep provider values, add comparable Horizons values, and enrich the table.
 
     The un-suffixed position and rate columns remain the values used by the
