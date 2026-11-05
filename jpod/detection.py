@@ -55,17 +55,8 @@ def position_probability(mu, cov, xmin, xmax, ymin, ymax):
 
 
 def magnitude_probability(v, v_lim, sigma_v=0.5):
-    """P(V_true <= V_lim) for V_true ~ N(v, sigma_v^2). NaN if v is NaN.
-
-    All arguments are reduced to plain floats in magnitudes before the
-    subtraction, so passing a Quantity (``21.5 * u.mag``), a dimensionless
-    or unit-ed table column never raises a UnitConversionError.
-    """
-    v = _mag_array(v)
-    v_lim = _mag_float(v_lim)
-    sigma_v = _mag_float(sigma_v)
-    with np.errstate(invalid="ignore"):
-        return norm.cdf((v_lim - v) / sigma_v)
+    """P(V_true <= V_lim) for V_true ~ N(v, sigma_v^2). NaN if v is NaN."""
+    return norm.cdf((v_lim - v) / sigma_v)
 
 
 def _plain(column):
