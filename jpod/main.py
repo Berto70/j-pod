@@ -1,37 +1,34 @@
-"""Find the asteroids in a FITS image with SkyBoT and add JPL uncertainty ellipses."""
+"""Find asteroids in FITS images with a selected provider and enrich via Horizons."""
 import argparse
 from pathlib import Path
 
-import astropy.units as u
-from astropy.coordinates import SkyCoord
 import numpy as np
 
-from astroquery.jplhorizons import Horizons
-from astroquery.mpc import MPC
-from astroquery.imcce import Skybot
-
 from . import __version__
-from .catalogs import fetch_jpl_data, query_skybot
+from .horizons import enrich_with_horizons
 from .image_geometry import (
     add_ellipse_image_angle,
     filter_in_image,
     image_orientation,
     load_image,
+    describe_time,
     search_radius,
+    compute_trail_length,
 )
-from .plotting import plot_field
+from .providers import query_mpc_identification, query_skybot
+from .plotting import plot_field, plot_cutouts
 from .detection import add_detection_probability
+from .trailing_loss import add_trailing_loss, compute_fwhm
 from .output import save_table_csv
+from .config import MARGIN, OUTPUT_COLUMNS, OBSCODES_JSON, ZOOM_HALF_SIZE
 
-MARGIN = 5 * u.arcmin    # widen the cone so ellipses of nearby objects are not missed
-MAGNIFY = 500             # ellipse magnification in the plot (1 = true size)
+MOTION_SCALE = 10
+ZOOM_OBJECTS = []
 
-OUTPUT_COLUMNS = [
-    "Name", "RA", "DEC", "posunc", "V", "H",
-    "RA_rate", "DEC_rate", "sky_speed",
-    "SMAA_3sigma", "SMIA_3sigma", "LOV_PA", "ellipse_angle",
-    "P_pos", "P_mag", "P_det",
-]
+
+DATE_OBS = None         # None: read it from the header, or force it
+TIME_REFERENCE = None   # what DATE-OBS (or similar keywords) means: "start", "mid" or "end" of the exposure
+
 
 def resolve_path(path, workdir, default_subdir=None):
     """
@@ -49,6 +46,17 @@ def resolve_path(path, workdir, default_subdir=None):
     else:
         return (workdir / p).resolve()
 
+
+def _ensure_pixel_trail_length(info, table):
+    """Restore the pixel trail column if a downstream step removed it."""
+    if "trail_length [px]" not in table.colnames:
+        print(
+            "Warning: pixel trail length is missing; recalculating trail lengths "
+            "before saving."
+        )
+        compute_trail_length(info, table)
+
+
 def create_parser() -> argparse.ArgumentParser:
     """Parsing CLI arguments."""
 
@@ -63,10 +71,18 @@ def create_parser() -> argparse.ArgumentParser:
                         +" Default parent directory is the data directory")
     parser.add_argument("-outdir", "--output_dir", type=Path, default=None, help="Output directory")
 
-    parser.add_argument("-obs", "--observatory", type=str, default="I41", help="Observatory code")
+    parser.add_argument("-obs", "--observatory", type=str, default=None,
+                        help="Fallback observatory code when header/site lookup finds none")
+    parser.add_argument(
+        "--provider",
+        choices=("mpc", "skybot"),
+        default="skybot",
+        help="Small-body discovery provider (default: skybot)",
+    )
     parser.add_argument("--vlim", type=float, default=21.5, help="Limiting magnitude of the image")
     parser.add_argument("--sigmav", type=float, default=0.5, help="Standard deviation of the magnitude")
     parser.add_argument("--pmin", type=float, default=0.05, help="Minimum detection probability")
+    parser.add_argument("--magnify", type=float, default=1.0, help="Magnification factor for the ellipses in the plots")
 
     parser.add_argument("--savefig", action="store_true", default=False, help="Save the plots as PNG files")
     parser.add_argument("--printtable", action="store_true", default=False, help="Print the complete table of results")
@@ -84,81 +100,131 @@ def create_parser() -> argparse.ArgumentParser:
 def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
 
     prefix = Path(fits_file).stem
-    info = load_image(fits_file)
+    # 1. Load the FITS image and resolve its WCS, observatory code, and times
+    #    before making any provider requests.
+    info = load_image(
+        fits_file, args.observatory, TIME_REFERENCE, DATE_OBS, OBSCODES_JSON
+    )
 
-    # 1. Image and orientation
+    # 2. Report the resolved image centre, observation interval, and orientation.
+    print(f"\nObservatory code: {info.observatory_code} ({info.obs_code_source})\n")
+    print()
+    for line in describe_time(info):
+        print(line)
+    print()
     angle_north, angle_east, parity = image_orientation(info.wcs, info.center)
+    fwhm_pixels = compute_fwhm(info)
+    print(f"Stellar FWHM: {fwhm_pixels:.2f} pixels")
     print(
         f"At the image center: North points at {angle_north:.4f} deg, "
         f"East at {angle_east:.4f} deg (CCW from +x, 0 = right, 90 = up); "
         f"parity = {parity:+d}"
     )
 
-    # 2. SkyBoT cone search
-    field = SkyCoord(info.center.ra.deg * u.deg, info.center.dec.deg * u.deg, frame="icrs")
+    # 3. Discover small bodies; both adapters return the shared provider schema.
     radius = search_radius(info, MARGIN)
-    print(f"Querying SkyBoT for asteroids in the image field in a radius of {radius}...")
-    table = query_skybot(field, radius, info.epoch, args.observatory)
+    if args.provider == "mpc":
+        print(
+            f"Querying MPC MPChecker for minor planets in the image field "
+            f"in a radius of {radius}...",
+            flush=True,
+        )
+        table = query_mpc_identification(info, radius)
+    else:
+        print(
+            f"Querying SkyBoT for small bodies in the image field "
+            f"in a radius of {radius}...",
+            flush=True,
+        )
+        table = query_skybot(
+            info.center, radius, info.start_obs, info.observatory_code
+        )
     if len(table) == 0:
-        print("No asteroids found in this field of view.")
+        print("No small bodies found in this field of view.")
         return
 
-    # 3. JPL data, ellipse orientation in the image, overlap filter
-    fetch_jpl_data(table, info.epoch, args.observatory)
-
-    # Filter out objects with excessively large uncertainties (e.g. > 10 arcmin)
-    max_uncertainty = 600 * u.arcsec 
-    smaa = u.Quantity(table["SMAA_3sigma"])
-    threshold = (smaa < max_uncertainty) | np.isnan(smaa.value)
-    table = table[threshold]
-    print(f"\nFiltered out {np.sum(~threshold)} objects with excessively large uncertainties.")
-
+    # 4. Enrich candidates with Horizons data, then keep the image-overlapping
+    #    objects and measure their projected trail lengths.
+    table = enrich_with_horizons(
+        table, info.start_obs, info.end_obs, info.observatory_code
+    )
     add_ellipse_image_angle(table, info.wcs)
     table = filter_in_image(table, info)
+    compute_trail_length(info, table)
+    add_trailing_loss(table, fwhm_pixels)
     print(f"\n{len(table)} objects overlap the image.")
     if len(table) == 0:
         return
 
-    # 4. Detection probability and survivors
+    # Filter out objects with excessively large uncertainties (e.g. > 10 arcmin)
+    #max_uncertainty = 600 * u.arcsec 
+    #smaa = u.Quantity(table["SMAA_3sigma"])
+    #threshold = (smaa < max_uncertainty) | np.isnan(smaa.value)
+    #table = table[threshold]
+    #print(f"\nFiltered out {np.sum(~threshold)} objects with excessively large uncertainties.")
+
+    # 5. Combine positional and magnitude probabilities into the final score.
     add_detection_probability(table, info, args.vlim, args.sigmav)
     survivors = np.asarray(table["P_det"], dtype=float) >= args.pmin
+    table["detectable"] = survivors
     n_surv = int(survivors.sum())
     print(f"{n_surv} of {len(table)} objects have P_det >= {args.pmin}"
           f"(V_lim = {args.vlim}, sigma_V = {args.sigmav})")
     print(f"Expected number of detections: {np.nansum(table['P_det']):.2f}")
-
     table.sort("P_det", reverse=True) # sort by P_det desc
+    survivors = np.asarray(table["detectable"], dtype=bool) #rebuilt after sorting
 
-    # 5. Plots
+
+    # 6. Render candidate and detection-probability plots.
     plot_field(
         info,
         table, 
         angle_north,
         angle_east, 
-        magnify=MAGNIFY,
-        show = False, 
-        title =f"All objects overlapping the image (ellipses x{MAGNIFY})",
+        magnify=args.magnify,
+        object_class="NEA",
+        survivors=None,
+        show=False,
+        title = None,
         output_dir=output_dir / "plots",
         output_file=f"{prefix}_candidates.png" if args.savefig else None,
+        V_lim=args.vlim,
+        P_min=args.pmin
         )
     plot_field(
         info, 
         table, 
         angle_north, 
         angle_east, 
-        magnify=MAGNIFY, 
-        show = False, 
+        magnify=args.magnify, 
+        object_class=None,
         survivors=survivors, 
-        title = (f"Green: P_det >= {args.pmin} (V_lim ={args.vlim});"
-                f"grey: below threshold (ellipses x{MAGNIFY})"),
+        show=False,
+        title = None,
         output_dir=output_dir / "plots",
         output_file=f"{prefix}_survivors.png" if args.savefig else None,
+        V_lim=args.vlim,
+        P_min=args.pmin
         )
+    if ZOOM_OBJECTS:
+        plot_cutouts(
+            info, 
+            table, 
+            ZOOM_OBJECTS, 
+            ZOOM_HALF_SIZE, 
+            magnify=args.magnify, 
+            motion_scale = MOTION_SCALE, 
+            output_dir = output_dir / "plots",
+            output_file=f"{prefix}_zoom.png" if args.savefig else None,
+            show=False 
+            )   
+    #plt.show()
 
-    # 6. Table
+    # 7. Save only the compact, user-facing result columns to CSV.
+    _ensure_pixel_trail_length(info, table)
     csv_file = f"{prefix}_results.csv"
     save_table_csv(table, output_dir / "tables", csv_file, OUTPUT_COLUMNS)
-    print(f"\nTable saved to {csv_file}")
+    print(f"\nTable saved to {output_dir}/tables/{csv_file}")
     if args.printtable:
         print("\n--- Complete target results ---")
         table[OUTPUT_COLUMNS].pprint_all()
