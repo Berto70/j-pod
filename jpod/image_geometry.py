@@ -31,6 +31,10 @@ class ImageInfo:
     exptime: object           # exposure time (Quantity) or None
     time_source: str          # where the time was found
     header_fwhm: float | None # FITS FWHM, assumed to be in pixels
+    header_zero_points: tuple[tuple[str, float], ...]
+    header_saturation: float | None
+    header_gain_e_per_adu: float | None
+    filter_name: str | None
 
 
 def load_image(fits_file: str, observatory_code = None, time_reference = None, date_obs = None, obscodes_json = None)-> ImageInfo:
@@ -61,11 +65,55 @@ def load_image(fits_file: str, observatory_code = None, time_reference = None, d
     if header_fwhm is not None:
         header_fwhm = float(header_fwhm)
 
+    # Keep both supported zero-point cards so the calibration layer can apply
+    # the configured precedence without reopening the FITS file.
+    header_zero_points = []
+    for keyword in ("MAGZERO", "PHOTZP"):
+        if keyword not in header:
+            continue
+        try:
+            value = float(header[keyword])
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(value):
+            header_zero_points.append((keyword, value))
+
+    # A saturation threshold lets aperture photometry reject clipped stars.
+    header_saturation = None
+    for keyword in ("SATURATE", "SATLEVEL"):
+        if keyword not in header:
+            continue
+        try:
+            value = float(header[keyword])
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(value) and value > 0:
+            header_saturation = value
+            break
+
+    # FITS gain values convert data numbers (ADU/DN) to photoelectrons.
+    header_gain_e_per_adu = None
+    for keyword in ("EGAIN", "GAIN"):
+        if keyword not in header:
+            continue
+        try:
+            value = float(header[keyword])
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(value) and value > 0:
+            header_gain_e_per_adu = value
+            break
+
+    filter_name = header.get("FILTER")
+    if filter_name is not None:
+        filter_name = str(filter_name).strip() or None
+
     scale = proj_plane_pixel_scales(w.celestial)[0] * 3600
 
     return ImageInfo(data, w, nx, ny, center, corners, scale,
                      code, code_source, date_obs, start_obs, end_obs, exptime,
-                     time_source, header_fwhm)
+                     time_source, header_fwhm, tuple(header_zero_points),
+                     header_saturation, header_gain_e_per_adu, filter_name)
 
 def describe_time(info: ImageInfo)->list:
     """Lines describing the observation time, for the terminal."""

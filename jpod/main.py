@@ -18,12 +18,24 @@ from .image_geometry import (
 from .providers import query_mpc_identification, query_skybot
 from .plotting import plot_field, plot_cutouts
 from .detection import add_detection_probability
-from .trailing_loss import add_trailing_loss, compute_fwhm
+from .trailing_loss import add_trailing_loss
 from .output import save_table_csv
-from .config import MARGIN, OUTPUT_COLUMNS, OBSCODES_JSON, ZOOM_HALF_SIZE
+from .config import (
+    MARGIN,
+    OBSCODES_JSON,
+    OUTPUT_COLUMNS,
+    ZOOM_HALF_SIZE,
+    resolve_v50_catalog_dir,
+)
+from .photometric_calibration import (
+    calculate_limiting_magnitude,
+    determine_zero_point,
+    is_v_filter,
+)
+from .image_analysis import measure_image
 
 MOTION_SCALE = 10
-ZOOM_OBJECTS = []
+ZOOM_OBJECTS = ["2020 UL3"]
 
 
 DATE_OBS = None         # None: read it from the header, or force it
@@ -57,6 +69,17 @@ def _ensure_pixel_trail_length(info, table):
         compute_trail_length(info, table)
 
 
+def _positive_float(value: str) -> float:
+    """Parse a finite positive CLI value such as the SNR threshold."""
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a number") from exc
+    if not np.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive finite number")
+    return parsed
+
+
 def create_parser() -> argparse.ArgumentParser:
     """Parsing CLI arguments."""
 
@@ -79,7 +102,18 @@ def create_parser() -> argparse.ArgumentParser:
         default="skybot",
         help="Small-body discovery provider (default: skybot)",
     )
-    parser.add_argument("--vlim", type=float, default=21.5, help="Limiting magnitude of the image")
+    parser.add_argument(
+        "--vlim",
+        type=float,
+        default=21.5,
+        help="Fallback limiting magnitude if an automatic V-band estimate is unavailable",
+    )
+    parser.add_argument(
+        "--snr",
+        type=_positive_float,
+        default=3.0,
+        help="SNR threshold for the automatic sky-noise limiting magnitude (default: 3)",
+    )
     parser.add_argument("--sigmav", type=float, default=0.5, help="Standard deviation of the magnitude")
     parser.add_argument("--pmin", type=float, default=0.05, help="Minimum detection probability")
     parser.add_argument("--magnify", type=float, default=1.0, help="Magnification factor for the ellipses in the plots")
@@ -116,13 +150,82 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
         print(line)
     print()
     angle_north, angle_east, parity = image_orientation(info.wcs, info.center)
-    fwhm_pixels = compute_fwhm(info)
+    # Background, FWHM, detected stars, and aperture fluxes share one analysis.
+    measurements = measure_image(info)
+    fwhm_pixels = measurements.fwhm_pixels
     print(f"Stellar FWHM: {fwhm_pixels:.2f} pixels")
+    workdir = args.workdir.resolve() if args.workdir else Path.cwd()
+    catalog_dir = resolve_v50_catalog_dir(workdir)
+    zero_point = determine_zero_point(info, measurements, catalog_dir)
+    v_lim = args.vlim
+    if zero_point.value is not None:
+        if zero_point.matched_stars:
+            print(
+                f"Photometric zero point: {zero_point.value:.3f} "
+                f"({zero_point.source}; {zero_point.matched_stars} stars, "
+                f"robust scatter {zero_point.scatter:.3f} mag)",
+                flush=True,
+            )
+        else:
+            print(
+                f"Photometric zero point: {zero_point.value:.3f} "
+                f"({zero_point.source})",
+                flush=True,
+            )
+        if is_v_filter(info.filter_name):
+            limiting_magnitude = calculate_limiting_magnitude(
+                info,
+                measurements,
+                zero_point.value,
+                args.snr,
+            )
+            if limiting_magnitude.value is not None:
+                v_lim = limiting_magnitude.value
+                gain_note = (
+                    f", gain {limiting_magnitude.gain_e_per_adu:.3g} "
+                    "electrons/image-unit"
+                    if limiting_magnitude.gain_e_per_adu is not None
+                    else ", assuming 1 image unit per electron (no gain in header)"
+                )
+                print(
+                    f"Median sky background: "
+                    f"{limiting_magnitude.background_rate:.3f} image units/"
+                    f"pixel/second; sky noise in the FWHM aperture: "
+                    f"{limiting_magnitude.sky_noise:.3f} image units"
+                    f"{gain_note}.",
+                    flush=True,
+                )
+                print(
+                    f"Calculated V_lim: {v_lim:.2f} "
+                    f"(SNR threshold {args.snr:g}); using this value.",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"Automatic V_lim unavailable: "
+                    f"{limiting_magnitude.unavailable_reason}. "
+                    f"Continuing with --vlim={v_lim:.2f}.",
+                    flush=True,
+                )
+        else:
+            print(
+                f"Automatic V_lim is currently supported only for V-band "
+                f"images. Continuing with --vlim={v_lim:.2f}.",
+                flush=True,
+            )
+    else:
+        print(
+            f"Photometric zero point unavailable: {zero_point.unavailable_reason}. "
+            f"Continuing with --vlim={args.vlim:.2f}.",
+            flush=True,
+        )
+    print()
     print(
         f"At the image center: North points at {angle_north:.4f} deg, "
         f"East at {angle_east:.4f} deg (CCW from +x, 0 = right, 90 = up); "
         f"parity = {parity:+d}"
     )
+    print()
 
     # 3. Discover small bodies; both adapters return the shared provider schema.
     radius = search_radius(info, MARGIN)
@@ -162,12 +265,12 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
         return
 
     # 5. Combine positional and magnitude probabilities into the final score.
-    add_detection_probability(table, info, args.vlim, args.sigmav)
+    add_detection_probability(table, info, v_lim, args.sigmav)
     survivors = np.asarray(table["P_det"], dtype=float) >= args.pmin
     table["detectable"] = survivors
     n_surv = int(survivors.sum())
     print(f"{n_surv} of {len(table)} objects have P_det >= {args.pmin}"
-          f"(V_lim = {args.vlim}, sigma_V = {args.sigmav})")
+          f"(V_lim = {v_lim}, sigma_V = {args.sigmav})")
     print(f"Expected number of detections: {np.nansum(table['P_det']):.2f}")
     table.sort("P_det", reverse=True) # sort by P_det desc
     survivors = np.asarray(table["detectable"], dtype=bool) #rebuilt after sorting
@@ -186,7 +289,7 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
         title = None,
         output_dir=output_dir / "plots",
         output_file=f"{prefix}_candidates.png" if args.savefig else None,
-        V_lim=args.vlim,
+        V_lim=v_lim,
         P_min=args.pmin
         )
     plot_field(
@@ -201,7 +304,7 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
         title = None,
         output_dir=output_dir / "plots",
         output_file=f"{prefix}_survivors.png" if args.savefig else None,
-        V_lim=args.vlim,
+        V_lim=v_lim,
         P_min=args.pmin
         )
     if ZOOM_OBJECTS:

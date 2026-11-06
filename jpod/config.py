@@ -24,3 +24,16 @@ ZOOM_HALF_SIZE = 60
 # MPC list used to infer an observatory code when no valid code is in the header.
 PROJECT_DIR = Path(__file__).resolve().parent
 OBSCODES_JSON = PROJECT_DIR / "fits_header" / "obscodes_extended.json"
+V50_CATALOG_DIR = PROJECT_DIR.parent / "astap"
+
+
+def resolve_v50_catalog_dir(workdir: Path) -> Path:
+    """Find the local catalog beside the checkout or in the selected workdir."""
+    if V50_CATALOG_DIR.is_dir():
+        return V50_CATALOG_DIR
+
+    workdir_catalog = workdir / "astap"
+    if workdir_catalog.is_dir():
+        return workdir_catalog
+
+    return V50_CATALOG_DIR

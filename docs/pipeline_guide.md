@@ -27,6 +27,38 @@ the header time according to its keywords/comments or configured overrides,
 uses exposure duration where available, and records the image start and end
 times. The selected observatory code and time range are printed for the user.
 
+### V-band zero point and sky-limited magnitude
+
+For an image identified as V band, J-POD first uses a valid `MAGZERO` or
+`PHOTZP` header value. If neither is present, it matches measured image stars
+against the local ASTAP V50 catalog. When a zero point is available, the
+pipeline estimates an image-wide sky-noise limit using the median of the
+measured background model and a circular aperture with radius equal to the
+selected FWHM:
+
+```text
+aperture area = pi * FWHM_pixels^2
+sky variance = aperture area * background_rate * exposure_time / gain
+sky noise = sqrt(sky variance)
+V_lim = zero_point + 2.5 * log10(exposure_time / (SNR * sky_noise))
+```
+
+`background_rate` is the median image background divided by exposure time.
+The optional FITS `EGAIN` (or `GAIN`) keyword is interpreted as electrons per
+image unit, such as electrons per ADU. Dividing by gain converts the Poisson
+variance back to squared image units, matching the units of the aperture flux
+used for the zero point. If no gain is recorded, J-POD assumes one image unit
+per electron; this assumption may be inaccurate for ADU data without a gain
+value.
+
+The SNR threshold defaults to 3 and can be changed with `--snr`, for example
+`--snr 5`. This initial estimate includes sky Poisson noise only: it does not
+include read noise, dark-current noise, aperture corrections, or spatial
+variation in the limiting magnitude. The zero point must be on the same
+count-rate convention as the image aperture measurements. For non-V or
+unspecified filters, unavailable zero points, or unusable background data, the
+user-supplied `--vlim` remains in effect.
+
 ## 2. Choose a small-body discovery provider
 
 The `--provider` CLI option selects one provider for this run:
@@ -168,4 +200,3 @@ It then writes the compact CSV selection from `OUTPUT_COLUMNS` in
 provider-versus-Horizons comparison columns remain available in the in-memory
 table but are intentionally omitted from the CSV to keep the saved table
 readable.
-
