@@ -152,12 +152,14 @@ def _find_row(table, query):
  
  
 def plot_cutouts(info, table, names,
-                half_size=60, output_dir=None, output_file=None, show=True):
+                half_size=60, min_trail_for_arrow=5.0,
+                output_dir=None, output_file=None, show=True):
     """Zoom around the objects whose name matches one of 'names'.
  
     Each panel shows (in pixel coordinates, 2 * half_size pixels wide):
       red circle   predicted position at the start of the exposure
-      blue arrow   expected motion from the start to the end of the exposure
+      blue arrow   expected motion for trails longer than min_trail_for_arrow
+      larger red circle for shorter trails, so the marker stays visible
       red dashed   edges of the image, when they are inside the panel
     """
     rows = []
@@ -178,6 +180,11 @@ def plot_cutouts(info, table, names,
         x, y = float(row["x_pix"]), float(row["y_pix"])
         x_end, y_end = (float(row["x_pix_end"]), float(row["y_pix_end"])) if has_end else (x,y)
         trail_length = float(row["trail_length [px]"])
+        show_motion = (
+            has_end
+            and np.isfinite(trail_length)
+            and trail_length > min_trail_for_arrow
+        )
 
         # center of the panel: middle of the motion
         cx, cy = (x+x_end)/2, (y+y_end)/2
@@ -206,10 +213,10 @@ def plot_cutouts(info, table, names,
         ax.plot(
             x,y,
             marker="o",
-            ms=5,
+            ms=5 if show_motion else 10,
             mfc="none",
             mec="red",
-            mew=1.3,
+            mew=1.6,
             ls="",
             zorder=5
         )
@@ -229,7 +236,7 @@ def plot_cutouts(info, table, names,
             dx = x_end - x
             dy = y_end - y
             motion = np.hypot(dx,dy)
-            if motion > 0:
+            if show_motion and motion > 0:
                 ax.annotate(
                     "",
                     xy=(x_end, y_end),
@@ -244,14 +251,14 @@ def plot_cutouts(info, table, names,
                     ),
                     zorder=6
                 )
-            handles.append(
-                Line2D(
-                    [],[],
-                    color="tab:blue", 
-                    marker=">", 
-                    ls="-",
-                    lw=2,
-                    label="Motion (start to end)"))
+                handles.append(
+                    Line2D(
+                        [],[],
+                        color="tab:blue",
+                        marker=">",
+                        ls="-",
+                        lw=2,
+                        label="Motion (start to end)"))
  
         info_text = f"V = {_number(row['V']):.1f}"
         if "P_det" in table.colnames:
