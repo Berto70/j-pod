@@ -152,6 +152,25 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
     angle_north, angle_east, parity = image_orientation(info.wcs, info.center)
     # Background, FWHM, detected stars, and aperture fluxes share one analysis.
     measurements = measure_image(info)
+    unit_label = {
+        "adu": "integrated ADU/DN",
+        "electron": "integrated electrons",
+        "adu_per_second": "ADU/DN per second",
+        "electron_per_second": "electrons per second",
+        "unknown": "unknown",
+    }[info.image_unit_kind]
+    unit_details = []
+    if info.bunit:
+        unit_details.append(f"BUNIT={info.bunit!r}")
+    if info.image_unit_source:
+        unit_details.append(f"evidence: {info.image_unit_source}")
+    unit_suffix = f" ({'; '.join(unit_details)})" if unit_details else ""
+    print(f"Image pixel units: {unit_label}{unit_suffix}.")
+    if info.image_unit_kind == "unknown":
+        print(
+            f"Unit note: {info.image_unit_reason}. Automatic V_lim and "
+            "catalog-based zero-point calibration require recognized units."
+        )
     fwhm_pixels = measurements.fwhm_pixels
     if fwhm_pixels is not None:
         print(f"Stellar FWHM: {fwhm_pixels:.2f} pixels")
@@ -190,16 +209,16 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
                 v_lim = limiting_magnitude.value
                 gain_note = (
                     f", gain {limiting_magnitude.gain_e_per_adu:.3g} "
-                    "electrons/image-unit"
+                    "electrons/ADU or DN"
                     if limiting_magnitude.gain_e_per_adu is not None
-                    else ", assuming 1 image unit per electron (no gain in header)"
+                    else ""
                 )
                 print(
                     f"Median sky background: "
-                    f"{limiting_magnitude.background_per_pixel:.3f} image "
-                    f"units/pixel (full exposure); sky noise in the "
-                    f"FWHM aperture: "
-                    f"{limiting_magnitude.sky_noise:.3f} image units"
+                    f"{limiting_magnitude.background_per_pixel:.3f} "
+                    f"{limiting_magnitude.background_unit}; sky noise in the "
+                    f"FWHM aperture: {limiting_magnitude.sky_noise_per_second:.3f} "
+                    f"{limiting_magnitude.rate_unit}"
                     f"{gain_note}.",
                     flush=True,
                 )

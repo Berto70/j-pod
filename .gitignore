@@ -22,6 +22,8 @@ build
 .conda
 .tests/
 tests/
+docs/limiting_magnitude_guide.pdf
+docs/limiting_magnitude_guide.md
 database/
 jpl_horizons_cache.db
 *.db

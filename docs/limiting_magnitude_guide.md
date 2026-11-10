@@ -114,8 +114,16 @@ headers are not always complete or consistent.
   \(0.83\ \mathrm{e^-}/\mathrm{ADU}\) means one ADU corresponds on average to
   0.83 collected electrons.
 - **BUNIT**: a FITS header keyword that may state the units of pixel values.
-  It can be absent, generic, or insufficient to describe whether values are
-  integrated over the exposure or already divided by exposure time.
+  J-POD checks it and relevant unit-related header comments for integrated
+  ADU/DN, integrated electrons, ADU/DN per second, or electrons per second.
+  Generic “counts” is ambiguous because it does not identify ADU/DN versus
+  electrons; conflicting explicit metadata is also treated as unknown. If
+  explicit units are absent, comments on `PEDESTAL`, `CBLACK`, or `CWHITE`
+  that specify ADU/DN can support an inference of integrated ADU/DN. Gain
+  comments such as “e-/ADU” corroborate that inference but do not establish
+  the image units by themselves. Explicit image-unit metadata takes
+  precedence over these secondary clues. A plain ADU/DN or electron label is
+  treated as integrated data; a rate must be explicitly marked per second.
 
 If pixel values are in ADU, Poisson noise is not generally
 \(\sqrt{\text{ADU}}\) unless the gain is exactly one electron per ADU. If
@@ -306,38 +314,38 @@ electrons and the variance is \(N_e\) electrons squared.
 Let:
 
 - \(A_{\rm pix}\) be the number of pixels in the measurement aperture;
-- \(B_{\rm image}\) be the accumulated background in image units per pixel
-  for the whole exposure;
+- \(B\) be the median background per pixel in the units recorded by the
+  image;
 - \(t_{\rm exp}\) be exposure time in seconds; and
-- \(g\) be gain in electrons per image unit.
+- \(q\) be electrons per native image unit: the gain in electrons/ADU for
+  ADU/DN, or 1 for electron-valued pixels.
 
-The current implementation uses the median full-exposure background
-\(B_{\rm image}\) directly. It estimates the sky-noise variance in image units
-squared as
-
-\[
-\sigma_{\rm sky,image}^{\,2}
-=
-A_{\rm pix}\,B_{\rm image}/g.
-\]
-
-Then
+The background rate \(b\) is \(B/t_{\rm exp}\) for integrated images and \(B\)
+for images already expressed per second. The variance of the sky-noise in an
+aperture **flux rate**, in squared native-units-per-second, is
 
 \[
-\sigma_{\rm sky,image}
+\sigma_{\rm sky,rate}^{\,2}
 =
-\sqrt{A_{\rm pix}\,B_{\rm image}/g}.
+\frac{A_{\rm pix}\,b}{q\,t_{\rm exp}}.
 \]
 
-If pixel units are electrons, use the equivalent formula with \(g=1\)
-electron per image unit. If pixel units are ADU, dividing the variance by
-electrons-per-ADU converts the electron shot noise back to ADU units.
+Spelled out for the supported image types:
 
-**Important current assumption:** J-POD reads `EGAIN` first, then `GAIN`, and
-interprets either as electrons per image unit. It does not currently inspect
-`BUNIT` to determine whether pixel values are ADU, electrons, or rates. If no
-gain is found, it assumes \(g=1\). These assumptions are not safe for every
-FITS file and are a high-priority item to improve.
+- integrated ADU/DN: \(\sigma_{\rm sky,rate}^{2}
+  = A_{\rm pix}B/(g\,t_{\rm exp}^{2})\);
+- integrated electrons: \(\sigma_{\rm sky,rate}^{2}
+  = A_{\rm pix}B/t_{\rm exp}^{2}\);
+- ADU/DN per second: \(\sigma_{\rm sky,rate}^{2}
+  = A_{\rm pix}B/(g\,t_{\rm exp})\); and
+- electrons per second: \(\sigma_{\rm sky,rate}^{2}
+  = A_{\rm pix}B/t_{\rm exp}\).
+
+The gain is applied only to ADU/DN data, and those data require a positive
+`EGAIN` or `GAIN` card for an automatic limiting magnitude. The code does not
+silently assume a gain of one if it is missing. For unknown or conflicting
+units, automatic catalog calibration and \(V_{\rm lim}\) are disabled; the
+pipeline continues with the user-provided `--vlim`.
 
 ## Noise not yet included
 
@@ -363,7 +371,7 @@ The image records flux in instrumental units, not standard magnitudes. A
 **photometric zero point** is a calibration constant that relates measured
 flux to a catalog magnitude.
 
-J-POD uses a count-rate convention:
+J-POD uses a native-image-unit-per-second convention:
 
 \[
 m = ZP - 2.5\log_{10}(F/t_{\rm exp}),
@@ -375,14 +383,18 @@ or equivalently
 ZP = m + 2.5\log_{10}(F/t_{\rm exp}),
 \]
 
-where \(F\) is the background-subtracted aperture flux in image units and
-\(F/t_{\rm exp}\) is its rate in image units per second. Brighter sources
-have larger flux and smaller magnitudes.
+where \(F\) is the background-subtracted aperture flux. For integrated
+images \(F/t_{\rm exp}\) is used; for rate images \(F\) is already a rate.
+Thus, both cases produce a flux rate in the image's native unit per second.
+Brighter sources have larger rates and smaller magnitudes.
 
-This convention means the numerical zero point depends on the units and
-exposure-time convention of the flux. A zero point for ADU/s is not
-automatically interchangeable with a zero point for electrons/s or for
-uncorrected ADU totals.
+This convention means the numerical zero point depends on the native image
+unit and exposure-time convention. A zero point for ADU/s is not
+automatically interchangeable with one for electrons/s. Catalog calibration
+divides aperture flux by exposure time only when BUNIT says the image stores
+integrated values. Header `ZP`, `MAGZERO`, and `PHOTZP` retain the existing
+per-second-flux interpretation in the image's native unit; this assumption
+still needs checking against each instrument's software documentation.
 
 ## Current zero-point procedure
 
@@ -393,9 +405,10 @@ For each image, the current pipeline:
    in one shared image-analysis pass. If there are no suitable stars and no
    usable header FWHM, it preserves the background measurements and marks
    FWHM unavailable instead of stopping.
-3. Checks for a numeric `MAGZERO` header value; if present, uses it.
-   Otherwise it checks `PHOTZP`. If both are present but differ, `MAGZERO`
-   wins and the program warns.
+3. Checks numeric header zero points in order: `ZP`, `MAGZERO`, then
+   `PHOTZP`. The first valid value wins. If the selected `ZP` or `MAGZERO`
+   differs from a lower-priority value that is also present, the program
+   warns and keeps the higher-priority value.
 4. If there is no header zero point, only proceeds with catalog calibration
    if the filter is recognized as V and the local V50 catalog is available.
 5. Selects nearby V50 sky-cell files, projects catalog coordinates into image
@@ -417,8 +430,18 @@ trail-to-FWHM ratio, and trailing loss as unavailable.
 ## What the J75 numbers mean
 
 The test image `data/J75_01_20110720204510.fits` has `FILTER='V'`,
-`EXPTIME=90 s`, and header gain `EGAIN=0.83 electrons/ADU`. The current
-processing produced approximately:
+`EXPTIME=90 s`, and no `BUNIT` card. Its `PEDESTAL` comment describes a
+correction for zero-based ADU, and the `CBLACK` and `CWHITE` comments identify
+their display levels as ADUs. The `EGAIN` and `GAIN` comments independently
+give the electron-to-ADU/DN conversion. J-POD uses those ADU-specific cards
+to infer integrated ADU/DN; the gain comments corroborate that inference.
+Gain comments alone would not be enough. The FITS `BSCALE=1` and
+`BZERO=32768` describe unsigned-integer storage encoding, not the physical
+pixel units.
+
+With the ADU-specific header clues now used, J-POD automatically derives the
+catalog zero point and computes the sky-only limit. The current calculation
+gives approximately:
 
 - image-measured FWHM: \(3.28\) pixels (the header says 90 pixels, so the
   image-measured value is used);
@@ -429,7 +452,14 @@ processing produced approximately:
   \(27.69\) image units/pixel/second;
 - approximate aperture area: \(\pi(3.28)^2 \approx 33.89\) pixels;
 - sky noise in the aperture: about \(318.95\) image units; and
-- calculated sky-only limit at SNR 3: about \(V_{\rm lim}=19.15\).
+- calculated sky-only limit at SNR 3: \(V_{\rm lim}=19.1469\), approximately
+  \(19.15\) mag when rounded to two decimal places.
+
+The calculation uses the integrated-ADU sky-noise formula and the recorded
+gain. The header does not explicitly state a rate unit, so this inference
+treats the values as integrated over the exposure. It is supported by
+several related header comments, not by interpreting `BSCALE`/`BZERO` as
+physical units.
 
 The 0.603-mag scatter is a robust spread among the individual matched-star
 zero-point estimates. It is **not yet a confidence interval or standard error
@@ -440,7 +470,7 @@ relying on it for quantitative probabilities.
 
 ## Header zero points need validation
 
-The current code accepts finite `MAGZERO` and `PHOTZP` values without
+The current code accepts finite `ZP`, `MAGZERO`, and `PHOTZP` values without
 independently establishing their filter, flux units, aperture convention, or
 whether exposure time is already included. A header value can therefore be
 numerically usable but physically incompatible with the image measurements.
@@ -458,31 +488,33 @@ With aperture radius equal to FWHM,
 A_{\rm pix}\approx\pi\,\mathrm{FWHM}_{\rm pixels}^{\,2}.
 \]
 
-The program estimates sky noise as
+Let \(B\) be the median background per pixel, \(t_{\rm exp}\) the exposure
+time, \(q\) the electrons per native image unit, and \(b\) the background
+rate per pixel. For integrated images, \(b=B/t_{\rm exp}\); for rate images,
+\(b=B\). The sky-noise standard deviation in **aperture flux rate** units is
 
 \[
-\sigma_{\rm sky}
+\sigma_{\rm sky,rate}
 =
-\sqrt{A_{\rm pix}\,B_{\rm rate}\,t_{\rm exp}/g}.
+\sqrt{\frac{A_{\rm pix}\,b}{q\,t_{\rm exp}}}.
 \]
 
-It then estimates the limiting magnitude with
+The limiting magnitude at the selected SNR threshold is
 
 \[
 V_{\rm lim}
 =
-ZP + 2.5\log_{10}\!\left(
-\frac{t_{\rm exp}}{\mathrm{SNR}_{\rm threshold}\,
-\sigma_{\rm sky}}
+ZP - 2.5\log_{10}\!\left(
+\mathrm{SNR}_{\rm threshold}\,
+\sigma_{\rm sky,rate}
 \right).
 \]
 
-Here \(ZP\) is calibrated for image units per second and
-\(\sigma_{\rm sky}\) is in image units. In this shorthand, the zero point
-defines the reference rate unit. In code, the equivalent operation is to
-calculate the limiting aperture-flux rate,
-\(\mathrm{SNR}_{\rm threshold}\,\sigma_{\rm sky}/t_{\rm exp}\), and compare
-it with the calibrated rate zero point.
+Here \(ZP\) is calibrated for the native image unit per second, and
+\(\sigma_{\rm sky,rate}\) has those same units. The code uses \(q=g\) for
+ADU/DN and \(q=1\) for electrons. An ADU/DN image without a positive gain, or
+an image whose units cannot be identified, cannot produce an automatic
+limit.
 
 ## SNR threshold
 
@@ -493,11 +525,11 @@ and produces a brighter (numerically smaller) limiting magnitude.
 
 ## How the limit is used
 
-For V-band images with an available zero point and usable background, the
-calculated value replaces `--vlim` for the detection-probability calculation
-and plots. If the image is not recognized as V, the zero point is unavailable,
-or the limiting calculation fails, J-POD falls back to the supplied
-`--vlim` value (default 21.5).
+For V-band images with an available zero point, recognized image units, a
+usable FWHM and background, and (for ADU/DN) a valid gain, the calculated
+value replaces `--vlim` for the detection-probability calculation and plots.
+If those conditions are not met, J-POD reports why and falls back to the
+supplied `--vlim` value (default 21.5).
 
 The calculation produces one global point-source limit using the median
 background and one representative FWHM. Asteroid trails are handled
@@ -510,26 +542,32 @@ make the image limit a local map of sensitivity.
 ## Implemented now
 
 - FITS loading collects filter, exposure, selected zero-point and FWHM
-  keywords, saturation level, and gain keywords.
+  keywords, saturation level, gain keywords, and BUNIT/unit-related comments.
+- Explicit integrated ADU/DN, integrated electrons, ADU/DN/s, and electrons/s
+  image units are distinguished. Ambiguous or conflicting unit metadata does
+  not trigger a guessed automatic limit.
 - One shared image-analysis pass estimates a spatial background map, a robust
   residual scatter for star detection, stellar profiles, FWHM, and aperture
   fluxes.
-- Header `MAGZERO` is preferred to `PHOTZP`; if neither is present, V50
-  catalog matching is attempted only for recognized V filters.
+- Header `ZP` is preferred to `MAGZERO`, which is preferred to `PHOTZP`; if
+  none is present, V50 catalog matching is attempted only for recognized V
+  filters.
 - V50 lookup reads sky cells near measured stars rather than scanning the
   whole catalog.
 - Catalog-derived calibration requires at least five matches and reports
   robust scatter.
-- A sky-only V-band limit is calculated using the median background,
-  FWHM-radius aperture, gain if present (otherwise assumed unit gain), and
-  configurable SNR threshold.
+- A sky-only V-band limit is calculated using the unit-aware background rate,
+  FWHM-radius aperture, gain for ADU/DN data, and configurable SNR threshold.
 - The automatic limit is passed into magnitude-probability calculations and
   plots; `--vlim` remains a fallback.
 
-## Explicitly not implemented
+## Explicitly not implemented or not yet verified
 
-- General recognition of whether pixel values are ADU, electrons, counts per
-  second, or rescaled/stacked units.
+- Recognition of rescaled/stacked products and images whose noise is
+  correlated by processing.
+- Validation of the new BUNIT/comment classification against many cameras and
+  processing packages.
+- Automatic limits for ADU/DN data when no positive gain is recorded.
 - Validation that header zero points share the filter and rate/aperture
   convention used by the calculation.
 - Read-noise, dark-current, source-shot-noise, or resampling-noise terms.
@@ -549,13 +587,15 @@ make the image limit a local map of sensitivity.
 This is the recommended sequence for making the estimate robust across many
 images. Earlier steps support the correctness of later ones.
 
-## Priority 1 — Establish pixel units and gain
+## Priority 1 — Validate unit and gain interpretation
 
-Read and interpret `BUNIT`, `EGAIN`/`GAIN`, comments, and image provenance.
-Recognize integrated ADU, integrated electrons, rates, and known processed
-products where possible. Convert sky Poisson variance into the same units as
-the flux used for the zero point. If units cannot be determined, do not
-silently assume unit gain: report the assumption or fall back safely.
+The code now reads `BUNIT` and relevant comments and recognizes integrated
+ADU/DN, integrated electrons, ADU/DN rates, and electron rates. Next, verify
+these classifications and gain conventions against representative camera
+headers and processing software. Also check how stacked, rescaled, or
+background-subtracted products should be handled; those remain unsupported or
+ambiguous and should use the `--vlim` fallback until their noise properties
+are known.
 
 ## Priority 2 — Verify the zero point and J75 calibration scatter
 
@@ -611,10 +651,11 @@ actual detection completeness rather than only the analytic noise threshold.
 
 ### Immediate next development task
 
-The most useful next task is **Priority 1 together with the J75 checks in
-Priority 2**: establish image units and gain handling, then inspect why the
-seven matched J75 stars produce a large zero-point spread. Until those checks
-are done, the automatic number is a useful experiment but not a robust
+The most useful next task is **validate the unit/gain rules on representative
+headers, including J75, then continue with the J75 checks in Priority 2**:
+confirm its stored pixel units and exposure convention, then inspect why the
+seven matched J75 stars produced a large zero-point spread. Until those
+checks are done, the automatic number is a useful experiment but not a robust
 cross-instrument result.
 
 # Glossary

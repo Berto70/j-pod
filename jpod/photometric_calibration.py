@@ -10,7 +10,7 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from .image_analysis import ImageMeasurements, ImageStar
-from .image_geometry import ImageInfo
+from .image_geometry import ImageInfo, ImageUnitKind
 
 _CATALOG_HEADER_SIZE = 110
 _V50_RECORD_SIZE = 6
@@ -35,7 +35,9 @@ class LimitingMagnitudeResult:
 
     value: float | None
     background_per_pixel: float | None = None
-    sky_noise: float | None = None
+    background_unit: str | None = None
+    sky_noise_per_second: float | None = None
+    rate_unit: str | None = None
     aperture_area_pixels: float | None = None
     gain_e_per_adu: float | None = None
     unavailable_reason: str | None = None
@@ -53,6 +55,20 @@ def determine_zero_point(
     An unavailable result includes the reason so the caller can report it.
     """
     header_points = dict(image_info.header_zero_points)
+    if "ZP" in header_points:
+        conflicting_points = [
+            keyword
+            for keyword in ("MAGZERO", "PHOTZP")
+            if keyword in header_points
+            and not np.isclose(header_points["ZP"], header_points[keyword])
+        ]
+        if conflicting_points:
+            warnings.warn(
+                f"ZP differs from {', '.join(conflicting_points)}; using ZP as requested.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        return ZeroPointResult(header_points["ZP"], "ZP header")
     if "MAGZERO" in header_points:
         if (
             "PHOTZP" in header_points
@@ -90,6 +106,10 @@ def determine_zero_point(
         return _unavailable("celestial WCS is missing; image stars cannot be matched to V50")
     if measurements is None:
         return _unavailable("shared image measurements are unavailable")
+    if image_info.image_unit_kind == "unknown":
+        return _unavailable(
+            f"image units are ambiguous: {image_info.image_unit_reason}"
+        )
 
     catalog_dir = Path(catalog_dir)
     if not catalog_dir.is_dir():
@@ -153,8 +173,14 @@ def determine_zero_point(
             f"at least {_MIN_CALIBRATION_STARS} are required"
         )
 
+    integrated_units = image_info.image_unit_kind in {"adu", "electron"}
     matched_rates = np.asarray(
-        [stars[image_index].flux / exposure_seconds for image_index, _, _ in pairs],
+        [
+            stars[image_index].flux / exposure_seconds
+            if integrated_units
+            else stars[image_index].flux
+            for image_index, _, _ in pairs
+        ],
         dtype=float,
     )
     matched_magnitudes = np.asarray([magnitude for _, _, magnitude in pairs])
@@ -191,8 +217,7 @@ def calculate_limiting_magnitude(
 ) -> LimitingMagnitudeResult:
     """Estimate a V limit from sky Poisson noise in the FWHM-radius aperture.
 
-    The measured background is in image units per pixel for the full exposure.
-    A recorded gain is used to express Poisson noise back in those same units.
+    The zero point is defined for flux per second in the native image unit.
     """
     if image_info.exptime is None:
         return _limiting_magnitude_unavailable("exposure time is missing")
@@ -220,22 +245,58 @@ def calculate_limiting_magnitude(
             "median image background is not positive"
         )
 
+    unit_kind = image_info.image_unit_kind
+    if unit_kind == "unknown":
+        return _limiting_magnitude_unavailable(
+            f"image units are ambiguous: {image_info.image_unit_reason}"
+        )
+
     aperture_area = float(np.pi * measurements.fwhm_pixels**2)
-    gain = image_info.header_gain_e_per_adu
-    gain_correction = gain if gain is not None else 1.0
-    sky_variance = aperture_area * background_per_pixel / gain_correction
-    sky_noise = float(np.sqrt(sky_variance))
+    is_adu = unit_kind in {"adu", "adu_per_second"}
+    gain = image_info.header_gain_e_per_adu if is_adu else None
+    if is_adu and gain is None:
+        return _limiting_magnitude_unavailable(
+            "image values are ADU/DN but no positive EGAIN or GAIN is present"
+        )
+
+    is_integrated = unit_kind in {"adu", "electron"}
+    background_rate = (
+        background_per_pixel / exposure_seconds
+        if is_integrated
+        else background_per_pixel
+    )
+    electrons_per_image_unit = gain if gain is not None else 1.0
+    sky_variance_rate = (
+        aperture_area
+        * background_rate
+        / (electrons_per_image_unit * exposure_seconds)
+    )
+    sky_noise_per_second = float(np.sqrt(sky_variance_rate))
     magnitude = float(
         zero_point
-        + 2.5 * np.log10(exposure_seconds / (snr_threshold * sky_noise))
+        - 2.5 * np.log10(snr_threshold * sky_noise_per_second)
+    )
+    data_unit = _image_unit_label(unit_kind)
+    background_unit = (
+        f"{data_unit}/s/pixel" if not is_integrated else f"{data_unit}/pixel"
     )
     return LimitingMagnitudeResult(
         magnitude,
         background_per_pixel,
-        sky_noise,
+        background_unit,
+        sky_noise_per_second,
+        f"{data_unit}/s",
         aperture_area,
         gain,
     )
+
+
+def _image_unit_label(unit_kind: ImageUnitKind) -> str:
+    if unit_kind.startswith("adu"):
+        return "ADU/DN"
+    if unit_kind.startswith("electron"):
+        return "electrons"
+    return "unknown image unit"
 
 
 def _unavailable(reason: str) -> ZeroPointResult:

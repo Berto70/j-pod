@@ -50,8 +50,11 @@ steps. At a high level it contains:
 - pixel scale in arcseconds per pixel;
 - the observation time, exposure start/end, and exposure duration;
 - the resolved observatory code and where it came from;
-- selected header values: `FWHM`, `MAGZERO`, `PHOTZP`, `SATURATE` or
-  `SATLEVEL`, `EGAIN` or `GAIN`, and `FILTER`.
+- selected header values: `FWHM`, `ZP`, `MAGZERO`, `PHOTZP`, `SATURATE` or
+  `SATLEVEL`, `EGAIN` or `GAIN`, and `FILTER`; and
+- `BUNIT` plus relevant unit-related card comments, used to classify pixels
+  as integrated ADU/DN, integrated electrons, ADU/DN per second, electrons per
+  second, or unknown.
 
 The WCS is essential for catalog calibration. Catalog stars are stored at sky
 coordinates (right ascension and declination); the WCS projects those
@@ -95,13 +98,23 @@ interpretation, and exposure interval can be checked in the terminal.
 
 #### Other FITS cards collected
 
-The code reads finite numeric zero-point values from `MAGZERO` and `PHOTZP`;
-this step only parses their numbers, it does not prove that either value uses
-the right filter or flux convention. The first valid saturation card among
-`SATURATE` and `SATLEVEL` can be used to exclude saturated stars. For gain,
-`EGAIN` is tried before `GAIN`; the current code assumes either value means
-electrons per image unit. It does not interpret `BUNIT` to decide whether
-pixels are ADU, electrons, or rates.
+The code reads finite numeric zero-point values from `ZP`, `MAGZERO`, and
+`PHOTZP`, in that precedence order. This step only parses their numbers; it
+does not prove that a value uses the right filter or flux convention. The
+first valid saturation card among
+`SATURATE` and `SATLEVEL` can be used to exclude saturated stars. For gain, `EGAIN` is tried before `GAIN`. The loader classifies explicit
+`BUNIT` values and relevant comments. Generic “counts” does not tell ADU/DN
+from electrons, and conflicting clues are treated as unknown rather than
+guessed. If explicit units are absent, comments on `PEDESTAL`, `CBLACK`, or
+`CWHITE` that explicitly identify ADU/DN can support an inference of
+integrated ADU/DN; a gain comment such as “e-/ADU” corroborates this but is
+not sufficient by itself. Explicit image-unit metadata takes precedence.
+A plain ADU/DN or electron label is treated as integrated data; an explicit
+`/s`, `/sec`, or inverse-second suffix identifies a rate image.
+ADU/DN sky-noise calculations require a positive gain; electron data do not
+apply the gain a second time. Header zero points are still interpreted using
+the existing per-second-flux convention, in the image's native data unit;
+this convention should be verified for individual camera/software headers.
 
 ### 1.3 `measure_image()`: one shared image-measurement pass
 
@@ -112,7 +125,7 @@ measurements to zero-point and limiting-magnitude calculations. Its return
 value, `ImageMeasurements`, contains:
 
 - `fwhm_pixels`: the selected representative stellar width;
-- `background`: the spatial background map for the image;
+- `background`: the spatial background map in the image's native pixel units;
 - `noise`: a robust residual-scatter estimate used for detecting candidate
   stars; and
 - `stars`: vetted `ImageStar` records with pixel positions, aperture fluxes,
@@ -176,14 +189,16 @@ catalog path to
 [`determine_zero_point()`](../jpod/photometric_calibration.py#L44). It uses
 this precedence:
 
-1. If a valid numeric `MAGZERO` exists, use it. If `PHOTZP` also exists and
-   differs, issue a Python warning; `MAGZERO` still wins.
-2. Otherwise, if a valid numeric `PHOTZP` exists, use it.
-3. Only when no header zero point exists does the function consider a
+1. If a valid numeric `ZP` exists, use it. If either `MAGZERO` or `PHOTZP`
+   also exists and differs, issue a Python warning; `ZP` still wins.
+2. Otherwise, if a valid numeric `MAGZERO` exists, use it. If `PHOTZP` also
+   exists and differs, issue a Python warning; `MAGZERO` still wins.
+3. Otherwise, if a valid numeric `PHOTZP` exists, use it.
+4. Only when no header zero point exists does the function consider a
    catalog-derived zero point. Catalog calibration is restricted to filters
    recognized by `is_v_filter()` (for example `V`, `JOHNSON V`, or
-   `BESSELL V`).
-4. It checks exposure time, celestial WCS, shared measurements, catalog
+   `BESSELL V`) and recognized image units.
+5. It checks exposure time, celestial WCS, shared measurements, catalog
    directory, and the number of detected stars. A catalog-derived calibration
    requires at least five valid matches.
 
@@ -207,17 +222,20 @@ binary V50 records into arrays of RA, declination, and Johnson V magnitude.
 The WCS projects those catalog positions to pixels; `_match_stars()` makes
 nearest-neighbor, one-to-one matches within the pixel tolerance.
 
-For each retained match, the individual rate zero point is
+For each retained match, integrated-image flux is divided by exposure time;
+rate-image flux is used directly. The individual per-second zero point is
 
 \[
-ZP_i = V_i + 2.5\log_{10}(F_i/t_{\rm exp}),
+ZP_i = V_i + 2.5\log_{10}(F_{i,\rm rate}),
 \]
 
 where \(V_i\) is the catalog magnitude and \(F_i\) is the measured,
-background-subtracted aperture flux. Outliers are clipped using the median
-and scaled median absolute deviation (MAD). The final image zero point is
-the median of the remaining individual estimates. The reported robust
-scatter describes their spread; it is not yet a full uncertainty estimate.
+background-subtracted aperture flux in the image's native units;
+\(F_{i,\rm rate}\) is that flux per second in the same native units. Outliers
+are clipped using the median and scaled median absolute deviation (MAD). The
+final image zero point is the median of the remaining individual estimates.
+The reported robust scatter describes their spread; it is not yet a full
+uncertainty estimate.
 
 The catalog is **not opened** when a usable header zero point is found. The
 image-measurement pass still ran first, as described above.
@@ -227,33 +245,31 @@ image-measurement pass still ran first, as described above.
 If a zero point is available and the filter is recognized as V,
 `pipeline()` calls
 [`calculate_limiting_magnitude()`](../jpod/photometric_calibration.py#L184).
-It takes the median \(B\) of the spatial background map. This is the
-background level per pixel accumulated over the full exposure. For an
-aperture of area \(A_{\rm pix}\), the sky-only variance in image units is:
+It takes the median \(B\) of the spatial background map and converts it to a
+background rate \(b\) in the image's native unit per second per pixel. For
+integrated images \(b=B/t_{\rm exp}\); for rate images \(b=B\). Let \(q\) be
+electrons per native image unit: the header gain for ADU/DN, and 1 for
+electrons. For an aperture of area \(A_{\rm pix}\), the sky-only variance in
+the aperture flux **rate** is:
 
 \[
 A_{\rm pix} \approx \pi\,\mathrm{FWHM}_{\rm pixels}^{\,2},
 \qquad
-\sigma_{\rm sky}^{2}
-= \frac{A_{\rm pix}\,B}{g},
+\sigma_{\rm sky,rate}^{2}
+= \frac{A_{\rm pix}\,b}{q\,t_{\rm exp}},
 \]
 \[
 V_{\rm lim}
-= ZP + 2.5\log_{10}\!\left(
-\frac{t_{\rm exp}}{\mathrm{SNR}\,\sigma_{\rm sky}}\right).
+= ZP - 2.5\log_{10}\!\left(
+\mathrm{SNR}\,\sigma_{\rm sky,rate}\right).
 \]
 
-Here \(g\) is the header gain in electrons per image unit, or 1 if no gain is
-available. The exposure time cancels if the calculation is written in terms
-of a background rate:
-\(B_{\rm rate}=B/t_{\rm exp}\), so
-\(A_{\rm pix} B_{\rm rate}t_{\rm exp}/g=A_{\rm pix}B/g\). The code uses and
-prints \(B\) directly; it does not calculate the rate. A rate can be useful
-when comparing background levels across exposures of different durations,
-but for this per-image limit it is not needed.
-This is a sky-Poisson-only model; image-unit and gain assumptions are not yet
-validated for arbitrary FITS files. The SNR threshold defaults to 3 and can
-be changed with `--snr`.
+This is a sky-Poisson-only model. For ADU/DN, automatic \(V_{\rm lim}\) is
+unavailable if no positive `EGAIN` or `GAIN` is present; the program does not
+assume unit gain. If the image units are unknown, automatic catalog
+calibration and \(V_{\rm lim}\) are unavailable and the user-provided
+`--vlim` remains in effect. The SNR threshold defaults to 3 and can be changed
+with `--snr`.
 
 The calculated value replaces `args.vlim` for the magnitude-probability
 calculation and plots only if all required conditions succeed. A non-V
@@ -267,12 +283,12 @@ is used only when the image is explicitly recognized as V band.
 | Function | File | Role in this part of the pipeline |
 |---|---|---|
 | `pipeline()` | [`main.py`](../jpod/main.py#L137) | Orchestrates image loading, measurements, calibration, limit calculation, and later detection. |
-| `load_image()` | [`image_geometry.py`](../jpod/image_geometry.py#L40) | Reads primary image/header and constructs the `ImageInfo` context. |
+| `load_image()` | [`image_geometry.py`](../jpod/image_geometry.py#L40) | Reads primary image/header, classifies pixel units, and constructs the `ImageInfo` context. |
 | `get_observatory_code()` | [`fits_header/fits_header.py`](../jpod/fits_header/fits_header.py#L59) | Resolves the MPC observing-site code. |
 | `get_obs_times()` | [`fits_header/fits_header.py`](../jpod/fits_header/fits_header.py#L159) | Interprets header time and calculates exposure start/end. |
 | `measure_image()` | [`image_analysis.py`](../jpod/image_analysis.py#L45) | Estimates background/noise, FWHM, candidate star profiles, and aperture fluxes. |
 | `determine_zero_point()` | [`photometric_calibration.py`](../jpod/photometric_calibration.py#L44) | Returns a header zero point or calculates one from V50 matches. |
-| `calculate_limiting_magnitude()` | [`photometric_calibration.py`](../jpod/photometric_calibration.py#L184) | Turns background, FWHM, gain, exposure, zero point, and SNR into \(V_{\rm lim}\). |
+| `calculate_limiting_magnitude()` | [`photometric_calibration.py`](../jpod/photometric_calibration.py#L184) | Turns unit-aware background, FWHM, gain, exposure, zero point, and SNR into \(V_{\rm lim}\). |
 | `add_detection_probability()` | [`detection.py`](../jpod/detection.py#L57) | Uses the selected limit to compute magnitude and combined detection probabilities. |
 
 For the detailed operations inside `measure_image()` and the V50 reader/matcher,
@@ -468,11 +484,21 @@ In [`load_image()`](../jpod/image_geometry.py#L40):
    `get_observatory_code()` resolves the site code.
 6. `get_obs_times()` determines the timestamp, its reference within the
    exposure, and the exposure interval.
-7. The loader extracts the supported photometry-related header cards and
-   returns all of this as one `ImageInfo`.
+7. The loader extracts the supported photometry-related header cards,
+   classifies units from `BUNIT` and relevant comments, then returns all of
+   this as one `ImageInfo`. `_classify_image_units()` recognizes explicit
+   ADU/DN, electrons, and per-second forms. It considers the BUNIT value and
+   its FITS comment, selected unit-description cards, and comments that
+   explicitly describe image, pixel, or data units. A gain-card comment such
+   as “gain in e-/ADU” describes the conversion factor, not necessarily the
+   stored image values. If explicit unit metadata is absent, ADU/DN comments
+   on `PEDESTAL`, `CBLACK`, or `CWHITE` can identify integrated ADU/DN, with
+   gain comments used only as corroborating evidence. Explicit image-unit
+   metadata takes precedence over these secondary clues.
 
 The data pixels are not calibrated or rescaled by `load_image()`. Loading
-metadata such as a gain does not apply the gain to the pixel array.
+metadata such as a gain does not apply the gain to the pixel array. Unit
+classification describes the existing values; it does not transform them.
 
 ### A.3 Observatory lookup, one helper level deeper
 
@@ -632,9 +658,9 @@ the brightest 50 are returned in `ImageMeasurements`.
 ### A.6 Catalog calibration details
 
 [`determine_zero_point()`](../jpod/photometric_calibration.py#L44) first
-checks the parsed header zero-point values. It returns immediately for
-`MAGZERO`, or for `PHOTZP` if `MAGZERO` is absent. Therefore it does not open
-ASTAP files when either header value is accepted.
+checks the parsed header zero-point values. It returns immediately for `ZP`,
+then `MAGZERO`, then `PHOTZP`, if present. Therefore it does not open ASTAP
+files when any of these header values is accepted.
 
 When there is no header value,
 [`is_v_filter()`](../jpod/photometric_calibration.py#L248) checks whether
@@ -693,30 +719,39 @@ the aperture/flux convention.
 ### A.7 Turning measurements into `V_lim`
 
 [`calculate_limiting_magnitude()`](../jpod/photometric_calibration.py#L184)
-checks that exposure time, zero point, SNR, FWHM, and positive finite
-background are available. It takes the median of the *background map*
-(counts/image units per pixel accumulated during the exposure), divides by
-exposure time to call that value a rate, and calculates:
+checks that exposure time, zero point, SNR, FWHM, recognized image units, and
+positive finite background are available. The catalog-derived zero point
+uses the native image-unit flux per second: integrated-image aperture flux is
+divided by exposure time, while a rate image's aperture flux is already a
+rate. Header zero points retain the same per-second-flux interpretation.
+
+The median of the background map \(B\) is converted to a per-second
+background \(b\) per pixel: \(b=B/t_{\rm exp}\) for integrated images, and
+\(b=B\) for images whose BUNIT is already a rate. Let \(q\) be electrons per
+native image unit: the header gain for ADU/DN, and 1 for electrons. The
+limiting-magnitude calculation is:
 
 \[
 A_{\rm pix}\approx\pi\,\mathrm{FWHM}^{2},\qquad
-\sigma_{\rm sky}^{2}
-=A_{\rm pix}\,B_{\rm rate}\,t_{\rm exp}/g.
+\sigma_{\rm sky,rate}^{2}
+=\frac{A_{\rm pix}\,b}{q\,t_{\rm exp}}.
 \]
-
-It then applies the requested formula:
 
 \[
 V_{\rm lim}
-=ZP+2.5\log_{10}
-\left(\frac{t_{\rm exp}}{\mathrm{SNR}\,\sigma_{\rm sky}}\right).
+=ZP-2.5\log_{10}
+\left(\mathrm{SNR}\,\sigma_{\rm sky,rate}\right).
 \]
 
-The calculation assumes gain \(g\) is electrons per image unit. If the header
-does not provide a positive `EGAIN` or `GAIN`, it assumes \(g=1\). It does not
-inspect `BUNIT`, identify rate images, or include read noise, dark noise,
-source shot noise, aperture correction, or background-estimation uncertainty.
-Those are explicit limitations, not hidden corrections.
+This yields the same rate-based limit for the four supported cases:
+integrated ADU/DN, integrated electrons, ADU/DN per second, and electrons per
+second. ADU/DN requires a positive `EGAIN` or `GAIN`; electron data do not
+apply gain. Generic counts, missing unit clues, or conflicting clues make
+automatic catalog calibration and \(V_{\rm lim}\) unavailable. The pipeline
+continues with the user-provided `--vlim`. It also does not include read
+noise, dark noise, source shot noise, aperture correction, or
+background-estimation uncertainty. Those are explicit limitations, not
+hidden corrections.
 
 Finally, `pipeline()` passes the calculated `v_lim` rather than `args.vlim` to
 [`add_detection_probability()`](../jpod/detection.py#L68) and the plot
