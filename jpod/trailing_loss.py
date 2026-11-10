@@ -13,8 +13,11 @@ def compute_fwhm(image_info: ImageInfo) -> float | None:
     return measure_image(image_info).fwhm_pixels
 
 
-def add_trailing_loss(table, fwhm_pixels: float | None) -> None:
-    """Add trail corrections, or unavailable values when FWHM is unknown."""
+def add_trailing_loss(table, fwhm_pixels: float | None, a: float, b: float) -> None:
+    """Jones+18 use dm = 1.25 log10(1 + a x^2 / (1 + b x)),   x = trail length / FWHM
+    (a, b) = (0.67, 1.16): SNR loss;  (0.42, 0.0): detection loss with a PSF-like filter
+    
+    Add trail/FWHM, trailing loss, and trail-adjusted V magnitude."""
     if fwhm_pixels is None:
         trail_pixels = np.full(len(table), np.nan)
         ratio = np.full(len(table), np.nan)
@@ -24,15 +27,18 @@ def add_trailing_loss(table, fwhm_pixels: float | None) -> None:
         if not np.isfinite(fwhm_pixels) or fwhm_pixels <= 0:
             raise ValueError("FWHM must be a positive finite value in pixels.")
 
-        trail_pixels = np.asarray(table["trail_length [px]"], dtype=float)
-        ratio = trail_pixels / fwhm_pixels
-        delta_m = 2.5 * np.log10(1 + ratio)
-        visual_magnitude = np.asarray(
-            u.Quantity(table["V"]).to_value(u.mag),
-            dtype=float,
-        )
-        trail_adjusted_magnitude = visual_magnitude + delta_m
+    trail_pixels = np.asarray(table["trail_length [px]"], dtype=float)
+    ratio = trail_pixels / fwhm_pixels
 
+    delta_m = 1.25 * np.log10(1 + (a*ratio**2)/(1+b*ratio))  # trailing loss in magnitudes
+
+    assert np.all(delta_m[np.isfinite(delta_m)] >= 0)
+
+    visual_magnitude = np.asarray(
+        u.Quantity(table["V"]).to_value(u.mag),
+        dtype=float,
+    )
+    trail_adjusted_magnitude = visual_magnitude + delta_m
     for name, values, unit in (
         ("trail_length / FWHM", ratio, None),
         ("trailing_loss", delta_m, u.mag),

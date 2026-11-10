@@ -286,7 +286,7 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
     add_ellipse_image_angle(table, info.wcs)
     table = filter_in_image(table, info)
     compute_trail_length(info, table)
-    add_trailing_loss(table, fwhm_pixels)
+    add_trailing_loss(table, fwhm_pixels, a=0.42, b=0.0)  # detection loss with a PSF-like filter
     if fwhm_pixels is None:
         print(
             "Trailing-loss correction unavailable; magnitude probabilities "
