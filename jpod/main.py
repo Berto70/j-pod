@@ -34,7 +34,6 @@ from .photometric_calibration import (
 )
 from .image_analysis import measure_image
 
-MOTION_SCALE = 10
 ZOOM_OBJECTS = ["2020 UL3"]
 
 
@@ -345,8 +344,6 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
             table, 
             ZOOM_OBJECTS, 
             ZOOM_HALF_SIZE, 
-            magnify=args.magnify, 
-            motion_scale = MOTION_SCALE, 
             output_dir = output_dir / "plots",
             output_file=f"{prefix}_zoom.png" if args.savefig else None,
             show=False 

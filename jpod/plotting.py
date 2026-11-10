@@ -151,16 +151,13 @@ def _find_row(table, query):
     return None
  
  
-def plot_cutouts(info, table, names, 
-                half_size=60, magnify=1, motion_scale=1,
-                output_dir = None, output_file=None, show=True):
+def plot_cutouts(info, table, names,
+                half_size=60, output_dir=None, output_file=None, show=True):
     """Zoom around the objects whose name matches one of 'names'.
  
     Each panel shows (in pixel coordinates, 2 * half_size pixels wide):
-      red circle   predicted position (mid-exposure), drawn open so that it
-                   does not hide a source
-      blue line    expected motion from the start to the end of the exposure; need the columns x_pix_end, y_pix_end
-      orange       uncertainty ellipse at the start (magnified by 'magnify')
+      red circle   predicted position at the start of the exposure
+      blue arrow   expected motion from the start to the end of the exposure
       red dashed   edges of the image, when they are inside the panel
     """
     rows = []
@@ -227,24 +224,22 @@ def plot_cutouts(info, table, names,
             )
         ]
 
-        # expected motion from the start to the end of the exposure
+        # Expected motion from the start to the end of the exposure.
         if has_end:
-            dx = x_end -x
-            dy = y_end -y
+            dx = x_end - x
+            dy = y_end - y
             motion = np.hypot(dx,dy)
             if motion > 0:
-                arrow_length = max(motion * motion_scale, 5.0)
-                ux, uy = dx/motion, dy/motion
                 ax.annotate(
                     "",
-                    xy=(x+ux*arrow_length, y+uy*arrow_length),
-                    xytext=(x,y),
+                    xy=(x_end, y_end),
+                    xytext=(x, y),
                     arrowprops=dict(
                         arrowstyle="-|>",
                         color="tab:blue",
                         lw=2,
                         mutation_scale=13,
-                        shrinkA=3,
+                        shrinkA=0,
                         shrinkB=0
                     ),
                     zorder=6
@@ -256,22 +251,13 @@ def plot_cutouts(info, table, names,
                     marker=">", 
                     ls="-",
                     lw=2,
-                    label=f"Motion direction (x{motion_scale})"))
-
-        # uncertainty ellipse (at the start)
-        a = _row_quantity_value(row, table, "SMAA_3sigma", u.arcsec)
-        b = _row_quantity_value(row, table, "SMIA_3sigma", u.arcsec)
-        ang = _row_quantity_value(row, table, "ellipse_angle", u.deg)
-        if np.all(np.isfinite([a, b, ang])):
-            ax.add_patch(Ellipse((x, y), 2 * a * magnify / info.pixel_scale,
-                                 2 * b * magnify / info.pixel_scale, angle=ang,
-                                 fill=False, ec="orange", lw=1.2, alpha =1, zorder=4))
+                    label="Motion (start to end)"))
  
         info_text = f"V = {_number(row['V']):.1f}"
         if "P_det" in table.colnames:
             info_text += f"   P_det = {_number(row['P_det']):.2g}"
         motion_text = f"\nMotion during the exposure: {motion:.1f} px" if has_end else ""
-        ax.set_title(f"{name}\n{info_text}   pixel ({x:.0f}, {y:.0f}){motion_text}\n Ellipses magnified x{magnify}, motion magnified x{motion_scale}",
+        ax.set_title(f"{name}\n{info_text}   pixel ({x:.0f}, {y:.0f}){motion_text}",
                      fontsize=10)
         ax.set_xlim(cx - half, cx + half)
         ax.set_ylim(cy - half, cy + half)
