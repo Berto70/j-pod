@@ -153,7 +153,14 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
     # Background, FWHM, detected stars, and aperture fluxes share one analysis.
     measurements = measure_image(info)
     fwhm_pixels = measurements.fwhm_pixels
-    print(f"Stellar FWHM: {fwhm_pixels:.2f} pixels")
+    if fwhm_pixels is not None:
+        print(f"Stellar FWHM: {fwhm_pixels:.2f} pixels")
+    else:
+        print(
+            "Stellar FWHM unavailable: no suitable stellar profiles and no "
+            "usable FWHM in the FITS header. Continuing without trailing-loss "
+            "correction and using --vlim."
+        )
     workdir = args.workdir.resolve() if args.workdir else Path.cwd()
     catalog_dir = resolve_v50_catalog_dir(workdir)
     zero_point = determine_zero_point(info, measurements, catalog_dir)
@@ -189,8 +196,9 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
                 )
                 print(
                     f"Median sky background: "
-                    f"{limiting_magnitude.background_rate:.3f} image units/"
-                    f"pixel/second; sky noise in the FWHM aperture: "
+                    f"{limiting_magnitude.background_per_pixel:.3f} image "
+                    f"units/pixel (full exposure); sky noise in the "
+                    f"FWHM aperture: "
                     f"{limiting_magnitude.sky_noise:.3f} image units"
                     f"{gain_note}.",
                     flush=True,
@@ -260,6 +268,11 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
     table = filter_in_image(table, info)
     compute_trail_length(info, table)
     add_trailing_loss(table, fwhm_pixels)
+    if fwhm_pixels is None:
+        print(
+            "Trailing-loss correction unavailable; magnitude probabilities "
+            "will use the unadjusted V magnitude."
+        )
     print(f"\n{len(table)} objects overlap the image.")
     if len(table) == 0:
         return

@@ -36,7 +36,7 @@ class ImageStar:
 class ImageMeasurements:
     """Measurements shared by FWHM reporting and photometric calibration."""
 
-    fwhm_pixels: float
+    fwhm_pixels: float | None
     background: np.ndarray
     noise: float
     stars: tuple[ImageStar, ...]
@@ -78,9 +78,7 @@ def measure_image(image_info: ImageInfo) -> ImageMeasurements:
         1.4826 * np.median(np.abs(valid_residual - np.median(valid_residual)))
     )
     if not np.isfinite(noise) or noise <= 0:
-        if image_info.header_fwhm is not None:
-            return _measurements_without_stars(image_info, background, noise)
-        raise RuntimeError("Could not estimate image noise for stellar detection.")
+        return _measurements_without_stars(image_info, background, noise)
 
     # Keep the same peak threshold and candidate count used by the prior FWHM
     # estimator, so its established FWHM behavior remains familiar.
@@ -234,12 +232,12 @@ def _measurements_without_stars(
     background: np.ndarray,
     noise: float,
 ) -> ImageMeasurements:
-    """Preserve a valid header FWHM even when no calibration stars are found."""
-    if image_info.header_fwhm is None:
-        raise RuntimeError("No unsaturated, high-SNR stellar profiles were found.")
-    fwhm_pixels = float(image_info.header_fwhm)
-    if not np.isfinite(fwhm_pixels) or fwhm_pixels <= 0:
-        raise ValueError("FITS header FWHM must be a positive finite value in pixels.")
+    """Keep background measurements even when no usable FWHM is available."""
+    fwhm_pixels = image_info.header_fwhm
+    if fwhm_pixels is not None:
+        fwhm_pixels = float(fwhm_pixels)
+        if not np.isfinite(fwhm_pixels) or fwhm_pixels <= 0:
+            fwhm_pixels = None
     return ImageMeasurements(fwhm_pixels, background, noise, ())
 
 
@@ -267,6 +265,9 @@ def _reject_blended_profiles(
     stars: list[tuple[float, float, float, float]],
 ) -> list[tuple[float, float, float, float]]:
     """Remove profiles with another detected peak within two local FWHM."""
+    if not stars:
+        return []
+
     positions = np.asarray([(star[0], star[1]) for star in stars])
     widths = np.asarray([star[3] for star in stars])
     separations = cdist(positions, positions, metric="euclidean")

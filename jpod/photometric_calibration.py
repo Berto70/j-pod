@@ -34,7 +34,7 @@ class LimitingMagnitudeResult:
     """A sky-noise limited magnitude and the measurements behind it."""
 
     value: float | None
-    background_rate: float | None = None
+    background_per_pixel: float | None = None
     sky_noise: float | None = None
     aperture_area_pixels: float | None = None
     gain_e_per_adu: float | None = None
@@ -103,6 +103,8 @@ def determine_zero_point(
             f"at least {_MIN_CALIBRATION_STARS} are required"
         )
 
+    if measurements.fwhm_pixels is None:
+        return _unavailable("FWHM is unavailable and no image stars were measured")
     match_radius_pixels = max(2.0, measurements.fwhm_pixels)
     catalog_files = _catalog_files_for_stars(
         stars,
@@ -201,8 +203,12 @@ def calculate_limiting_magnitude(
         return _limiting_magnitude_unavailable("zero point must be finite")
     if not np.isfinite(snr_threshold) or snr_threshold <= 0:
         return _limiting_magnitude_unavailable("SNR threshold must be positive")
-    if not np.isfinite(measurements.fwhm_pixels) or measurements.fwhm_pixels <= 0:
-        return _limiting_magnitude_unavailable("measured FWHM must be positive")
+    if (
+        measurements.fwhm_pixels is None
+        or not np.isfinite(measurements.fwhm_pixels)
+        or measurements.fwhm_pixels <= 0
+    ):
+        return _limiting_magnitude_unavailable("FWHM is unavailable")
 
     background = np.asarray(measurements.background, dtype=float)
     finite_background = background[np.isfinite(background)]
@@ -214,13 +220,10 @@ def calculate_limiting_magnitude(
             "median image background is not positive"
         )
 
-    background_rate = background_per_pixel / exposure_seconds
     aperture_area = float(np.pi * measurements.fwhm_pixels**2)
     gain = image_info.header_gain_e_per_adu
     gain_correction = gain if gain is not None else 1.0
-    sky_variance = (
-        aperture_area * background_rate * exposure_seconds / gain_correction
-    )
+    sky_variance = aperture_area * background_per_pixel / gain_correction
     sky_noise = float(np.sqrt(sky_variance))
     magnitude = float(
         zero_point
@@ -228,7 +231,7 @@ def calculate_limiting_magnitude(
     )
     return LimitingMagnitudeResult(
         magnitude,
-        background_rate,
+        background_per_pixel,
         sky_noise,
         aperture_area,
         gain,

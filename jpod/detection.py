@@ -70,13 +70,14 @@ def add_detection_probability(table, info, v_lim, sigma_v=0.5,
     """Add the columns P_pos, P_mag and P_det.
 
     The table needs x_pix, y_pix (position at the start of the exposure), SMAA_3sigma, SMIA_3sigma, ellipse_angle,
-    posunc and V_trailing. The JPL ellipse is a 3-sigma ellipse (ellipse_nsigma). If it also has x_pix_end, y_pix_end 
+    posunc, and V. If V_trailing is unavailable, the unadjusted V is used.
+    The JPL ellipse is a 3-sigma ellipse (ellipse_nsigma). If it also has x_pix_end, y_pix_end
     (position at the end of the exposure), P_pos is the probability of being inside the image at both times; otherwise
     it is the probability of being inside at the single position given.
     
     The JPL ellipse is a 3-sigma ellipse. Objects without ellipse use an isotropic Gaussian with sigma =
     posunc / posunc_nsigma.
-    Objects with unknown V_trailing get NaN in P_mag and P_det.
+    Objects with unknown V (or both V and V_trailing) get NaN in P_mag and P_det.
     """
     scale = info.pixel_scale
     n = len(table)
@@ -106,7 +107,17 @@ def add_detection_probability(table, info, v_lim, sigma_v=0.5,
                                          x_end[i]-x[i], y_end[i]-y[i])
         p_pos[i] = position_probability((x[i], y[i]), cov, *bounds)
 
-    p_mag = magnitude_probability(_plain(table["V_trailing"]), v_lim, sigma_v)
+    visual_magnitude = _plain(table["V"])
+    if "V_trailing" in table.colnames:
+        trail_adjusted_magnitude = _plain(table["V_trailing"])
+        magnitude_for_probability = np.where(
+            np.isfinite(trail_adjusted_magnitude),
+            trail_adjusted_magnitude,
+            visual_magnitude,
+        )
+    else:
+        magnitude_for_probability = visual_magnitude
+    p_mag = magnitude_probability(magnitude_for_probability, v_lim, sigma_v)
 
     table["P_pos"] = p_pos
     table["P_mag"] = p_mag
