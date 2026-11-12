@@ -34,7 +34,7 @@ from .photometric_calibration import (
 )
 from .image_analysis import measure_image
 
-ZOOM_OBJECTS = ["2002 LE46", "2020 UL3"]
+ZOOM_OBJECTS = ["2002 LE46", "2001 QY177","2020 UL3"]
 
 
 DATE_OBS = None         # None: read it from the header, or force it

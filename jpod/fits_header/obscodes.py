@@ -22,9 +22,9 @@ KEY_LONGITUDE, KEY_COS, KEY_SIN, KEY_NAME = "Longitude", "cos", "sin", "Name"
 
 # Header keywords with the site position: degrees (east positive), degrees
 # (north positive) and metres above sea level. Only numeric values are used.
-LON_KEYWORDS = ("SITELON", "OBSLON", "LONGITUD")
-LAT_KEYWORDS = ("SITELAT", "OBSLAT", "LATITUDE")
-ALT_KEYWORDS = ("OBSALT", "ALTITUDE")
+LON_KEYWORDS = ("SITELON", "OBSLON", "LONGITUD", "OAJ TEL GEOLON")
+LAT_KEYWORDS = ("SITELAT", "OBSLAT", "LATITUDE", "OAJ TEL GEOLAT")
+ALT_KEYWORDS = ("OBSALT", "ALTITUDE", "OAJ TEL GEOELEV")
 
 # Header keywords with the telescope / site name.
 SITE_NAME_KEYWORDS = ("TELESCOP", "OBSERVAT")

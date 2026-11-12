@@ -61,8 +61,27 @@ def load_image(fits_file: str, observatory_code = None, time_reference = None, d
     date_obs: force the observation time (UTC string); if None it is taken from the header
     """
     with fits.open(fits_file) as hdul:
-        header = hdul[0].header
-        data = hdul[0].data.copy()
+        image_hdu = hdul[0] if hdul[0].header.get("NAXIS", 0) >= 2 else None
+        if image_hdu is None:
+            image_hdus = [
+                hdu for hdu in hdul[1:]
+                if hdu.is_image and hdu.header.get("NAXIS", 0) >= 2
+            ]
+            image_hdu = next(
+                (
+                    hdu for hdu in image_hdus
+                    if str(hdu.header.get("EXTNAME", "")).strip().upper() == "IMAGE"
+                ),
+                image_hdus[0] if image_hdus else None,
+            )
+        if image_hdu is None:
+            raise ValueError(f"No image HDU found in FITS file: {fits_file}")
+
+        header = image_hdu.header.copy()
+        image_data = image_hdu.data
+        if image_data is None:
+            raise ValueError(f"Image HDU contains no data in FITS file: {fits_file}")
+        data = image_data.copy()
 
     nx, ny = header["NAXIS1"], header["NAXIS2"]
     w = WCS(header)
