@@ -1,8 +1,6 @@
 """Image loading and geometry: WCS, orientation, ellipse angles, overlap filter."""
 
 from dataclasses import dataclass
-import re
-from typing import Literal
 
 import astropy.units as u
 from astropy.table import Column
@@ -12,16 +10,12 @@ from astropy.io import fits
 from astropy.time import Time
 from astropy.wcs import WCS
 from astropy.wcs.utils import proj_plane_pixel_scales
-from .fits_header.fits_header import get_obs_times, get_observatory_code
 from .fits_header.obscodes import load_obscodes_safe
-
-ImageUnitKind = Literal[
-    "adu",
-    "electron",
-    "adu_per_second",
-    "electron_per_second",
-    "unknown",
-]
+from .fits_header.metadata import (
+    ImageUnitKind,
+    _classify_image_units,
+    resolve_header_metadata,
+)
 
 
 @dataclass
@@ -39,9 +33,9 @@ class ImageInfo:
     date_obs: Time            # time written in the header
     start_obs: Time           # start of the exposure (UTC)
     end_obs: Time             # end of the exposure (UTC)
-    exptime: object           # exposure time (Quantity) or None
+    exptime: u.Quantity | None
     time_source: str          # where the time was found
-    header_fwhm: float | None # FITS FWHM, assumed to be in pixels
+    header_fwhm: float | None # Header FWHM normalized to pixels
     header_zero_points: tuple[tuple[str, float], ...]
     header_saturation: float | None
     header_gain_e_per_adu: float | None
@@ -50,6 +44,15 @@ class ImageInfo:
     bunit: str | None = None
     image_unit_source: str | None = None
     image_unit_reason: str | None = None
+    texptime: u.Quantity | None = None
+    texptime_source: str | None = None
+    observation_duration: u.Quantity | None = None
+    trail_duration: u.Quantity | None = None
+    trail_duration_source: str | None = None
+    header_fwhm_value: float | None = None
+    header_fwhm_unit: str | None = None
+    header_fwhm_source: str | None = None
+    header_profile: str = "generic"
 
 
 def load_image(fits_file: str, observatory_code = None, time_reference = None, date_obs = None, obscodes_json = None)-> ImageInfo:
@@ -92,228 +95,101 @@ def load_image(fits_file: str, observatory_code = None, time_reference = None, d
         np.array([0, 0, ny - 1, ny - 1]),
         w,
     )
-    obscodes = load_obscodes_safe(obscodes_json)
-    code, code_source = get_observatory_code(header, observatory_code, obscodes)
-    date_obs, start_obs, end_obs, exptime, time_source = get_obs_times(header, time_reference, date_obs)
-    header_fwhm = header.get("FWHM")
-    if header_fwhm is not None:
-        header_fwhm = float(header_fwhm)
-
-    # Keep supported zero-point cards so calibration can apply precedence
-    # without reopening the FITS file.
-    header_zero_points = []
-    for keyword in ("ZP", "MAGZERO", "PHOTZP"):
-        if keyword not in header:
-            continue
-        try:
-            value = float(header[keyword])
-        except (TypeError, ValueError):
-            continue
-        if np.isfinite(value):
-            header_zero_points.append((keyword, value))
-
-    # A saturation threshold lets aperture photometry reject clipped stars.
-    header_saturation = None
-    for keyword in ("SATURATE", "SATLEVEL"):
-        if keyword not in header:
-            continue
-        try:
-            value = float(header[keyword])
-        except (TypeError, ValueError):
-            continue
-        if np.isfinite(value) and value > 0:
-            header_saturation = value
-            break
-
-    # FITS gain values convert data numbers (ADU/DN) to photoelectrons.
-    header_gain_e_per_adu = None
-    for keyword in ("EGAIN", "GAIN"):
-        if keyword not in header:
-            continue
-        try:
-            value = float(header[keyword])
-        except (TypeError, ValueError):
-            continue
-        if np.isfinite(value) and value > 0:
-            header_gain_e_per_adu = value
-            break
-
-    image_unit_kind, bunit, unit_source, unit_reason = _classify_image_units(header)
-
-    filter_name = header.get("FILTER")
-    if filter_name is not None:
-        filter_name = str(filter_name).strip() or None
-
     scale = proj_plane_pixel_scales(w.celestial)[0] * 3600
-
-    return ImageInfo(data, w, nx, ny, center, corners, scale,
-                     code, code_source, date_obs, start_obs, end_obs, exptime,
-                     time_source, header_fwhm, tuple(header_zero_points),
-                     header_saturation, header_gain_e_per_adu, filter_name,
-                     image_unit_kind, bunit, unit_source, unit_reason)
-
-
-def _classify_image_units(header) -> tuple[ImageUnitKind, str | None, str | None, str]:
-    """Classify image units from explicit metadata or ADU-specific header clues."""
-    bunit_value = header.get("BUNIT")
-    bunit = str(bunit_value).strip() if bunit_value is not None else None
-    if not bunit:
-        bunit = None
-
-    clues: list[tuple[str, str]] = []
-    if bunit:
-        clues.append(("BUNIT", bunit))
-        try:
-            bunit_comment = header.cards["BUNIT"].comment.strip()
-        except (KeyError, AttributeError):
-            bunit_comment = ""
-        if bunit_comment:
-            clues.append(("BUNIT comment", bunit_comment))
-
-    related_keys = {"BTYPE", "DATATYPE", "IMAGEUNIT", "UNITS"}
-    for card in header.cards:
-        key = card.keyword.upper()
-        comment = card.comment.strip()
-        if key in related_keys or (key.startswith("BUNIT") and key != "BUNIT"):
-            clue = str(card.value).strip()
-            if clue:
-                clues.append((key, clue))
-            if comment:
-                clues.append((f"{key} comment", comment))
-        elif key in {"COMMENT", "HISTORY"}:
-            text = str(card.value).strip()
-            if _is_image_unit_description(text):
-                clues.append((key, text))
-        elif comment and _is_image_unit_description(comment):
-            clues.append((f"{key} comment", comment))
-
-    candidates: list[tuple[ImageUnitKind, str]] = []
-    for source, clue in clues:
-        classification = _classify_unit_clue(clue)
-        if classification is not None:
-            candidates.append((classification, source))
-
-    distinct_kinds = {kind for kind, _ in candidates}
-    rate_sources = [
-        source for source, clue in clues if _is_rate_unit_clue(clue)
-    ]
-    if len(distinct_kinds) == 1:
-        kind = next(iter(distinct_kinds))
-        if kind in {"adu", "electron"} and rate_sources:
-            sources = ", ".join(
-                dict.fromkeys(
-                    [source for _, source in candidates] + rate_sources
-                )
-            )
-            return (
-                "unknown",
-                bunit,
-                sources,
-                "unit metadata conflicts about whether image values are rates",
-            )
-        sources = ", ".join(dict.fromkeys(source for _, source in candidates))
-        return kind, bunit, sources, f"identified as {kind.replace('_', ' ')}"
-    if len(distinct_kinds) > 1:
-        sources = ", ".join(dict.fromkeys(source for _, source in candidates))
-        return (
-            "unknown",
-            bunit,
-            sources,
-            "unit metadata conflicts; image units are ambiguous",
-        )
-
-    adu_evidence = _adu_header_evidence(header)
-    if adu_evidence:
-        if rate_sources:
-            return (
-                "unknown",
-                bunit,
-                ", ".join(dict.fromkeys(adu_evidence + rate_sources)),
-                "ADU/DN clues do not resolve whether the image values are rates",
-            )
-        sources = ", ".join(adu_evidence)
-        return (
-            "adu",
-            bunit,
-            sources,
-            "inferred as integrated ADU/DN from ADU-specific header comments",
-        )
-
-    if not clues:
-        reason = "BUNIT and explicit unit-related comments are absent"
-    elif any(re.search(r"\bcounts?\b", clue, re.IGNORECASE) for _, clue in clues):
-        reason = "generic count units do not distinguish ADU/DN from electrons"
-    else:
-        reason = "unit metadata does not identify a supported image unit"
-    return "unknown", bunit, None, reason
-
-
-def _adu_header_evidence(header) -> list[str]:
-    """Return recognized ADU-specific clues, excluding gain comments alone."""
-    image_unit_evidence = []
-    for key in ("PEDESTAL", "CBLACK", "CWHITE"):
-        if key not in header:
-            continue
-        comment = header.cards[key].comment.strip()
-        if re.search(r"\b(?:adus?|dns?)\b", comment, re.IGNORECASE):
-            image_unit_evidence.append(f"{key} comment")
-    if not image_unit_evidence:
-        return []
-
-    evidence = image_unit_evidence.copy()
-    for key in ("EGAIN", "GAIN"):
-        if key not in header:
-            continue
-        comment = header.cards[key].comment.strip()
-        if re.search(
-            r"(?:\belectrons?\b|\be-\s*)\s*(?:/|per\s+)\s*\b(?:adus?|dns?)\b",
-            comment,
-            re.IGNORECASE,
-        ):
-            evidence.append(f"{key} gain-unit comment")
-    return evidence
-
-
-def _is_image_unit_description(text: str) -> bool:
-    unit = r"(?:\b(?:adus?|dns?|electrons?|counts?)\b|(?<![a-z])e-(?=\s|/|$))"
-    description = r"\b(?:image|pixel|data)\b.{0,40}" + unit
-    reverse = unit + r".{0,40}\b(?:image|pixel|data)\b"
-    return bool(re.search(f"(?:{description}|{reverse})", text, re.IGNORECASE))
-
-
-def _classify_unit_clue(clue: str) -> ImageUnitKind | None:
-    """Recognize only explicit ADU/DN or electron units and second-based rates."""
-    normalized = clue.lower().replace("−", "-").replace("⁻¹", "^-1")
-    is_rate = _is_rate_unit_clue(normalized)
-    is_electron = bool(
-        re.search(r"\b(?:electrons?|e-)\b|(?<![a-z])e-(?=\s|/|$)", normalized)
+    obscodes = load_obscodes_safe(obscodes_json)
+    metadata = resolve_header_metadata(
+        header,
+        float(scale),
+        observatory_code,
+        obscodes,
+        time_reference,
+        date_obs,
     )
-    is_adu = bool(
-        re.search(r"\b(?:adus?|dns?)\b|\bdigital\s+numbers?\b", normalized)
-    )
-    if is_electron == is_adu:
-        return None
-    if is_electron:
-        return "electron_per_second" if is_rate else "electron"
-    return "adu_per_second" if is_rate else "adu"
 
-
-def _is_rate_unit_clue(clue: str) -> bool:
-    normalized = clue.lower().replace("−", "-").replace("⁻¹", "^-1")
-    return bool(
-        re.search(
-            r"(?:/|per\s*)(?:s|sec(?:ond)?s?)\b"
-            r"|(?:^|[\s*])(?:s|sec(?:ond)?)\s*(?:\^|\*\*)?\s*-1(?:\b|$)",
-            normalized,
-        )
+    return ImageInfo(
+        data=data,
+        wcs=w,
+        nx=nx,
+        ny=ny,
+        center=center,
+        corners=corners,
+        pixel_scale=float(scale),
+        observatory_code=metadata.observatory_code,
+        obs_code_source=metadata.obs_code_source,
+        date_obs=metadata.date_obs,
+        start_obs=metadata.start_obs,
+        end_obs=metadata.end_obs,
+        exptime=metadata.exptime,
+        texptime=metadata.texptime,
+        texptime_source=metadata.texptime_source,
+        time_source=metadata.time_source,
+        header_fwhm=metadata.header_fwhm_pixels,
+        header_zero_points=metadata.header_zero_points,
+        header_saturation=metadata.header_saturation,
+        header_gain_e_per_adu=metadata.header_gain_e_per_adu,
+        filter_name=metadata.filter_name,
+        image_unit_kind=metadata.image_unit_kind,
+        bunit=metadata.bunit,
+        image_unit_source=metadata.image_unit_source,
+        image_unit_reason=metadata.image_unit_reason,
+        observation_duration=metadata.observation_duration,
+        trail_duration=metadata.trail_duration,
+        trail_duration_source=metadata.trail_duration_source,
+        header_fwhm_value=metadata.header_fwhm_value,
+        header_fwhm_unit=metadata.header_fwhm_unit,
+        header_fwhm_source=metadata.header_fwhm_source,
+        header_profile=metadata.profile_name,
     )
 
 
-def describe_time(info: ImageInfo)->list:
+def describe_time(info: ImageInfo) -> list[str]:
     """Lines describing the observation time, for the terminal."""
     lines = [f"Time in header: {info.date_obs.isot} UTC ({info.time_source})"]
     if info.exptime is not None:
-        lines.append(f"Exposure: {info.exptime:.1f}, from {info.start_obs.isot} to {info.end_obs.isot} UTC.")
+        lines.append(
+            f"Exposure-time value (photometry): "
+            f"{info.exptime.to_value(u.s):.3f} s."
+        )
+    if info.texptime is not None:
+        lines.append(
+            f"Total exposure time: {info.texptime.to_value(u.s):.3f} s "
+            f"({info.texptime_source})."
+        )
+    if info.observation_duration is not None:
+        lines.append(
+            f"Observation interval: {info.start_obs.isot} to {info.end_obs.isot} "
+            f"UTC ({info.observation_duration.to_value(u.s):.3f} s)."
+        )
+    if info.trail_duration is not None:
+        lines.append(
+            f"Trail duration used: {info.trail_duration.to_value(u.s):.3f} s "
+            f"({info.trail_duration_source}; "
+            f"{info.header_profile} profile preference)."
+        )
+    return lines
+
+
+def describe_units(info: ImageInfo) -> list[str]:
+    """Lines describing image pixel units and the units of header FWHM."""
+    unit_label = {
+        "adu": "integrated ADU/DN",
+        "electron": "integrated electrons",
+        "adu_per_second": "ADU/DN per second",
+        "electron_per_second": "electrons per second",
+        "unknown": "unknown",
+    }[info.image_unit_kind]
+    details = []
+    if info.bunit:
+        details.append(f"BUNIT={info.bunit!r}")
+    if info.image_unit_source:
+        details.append(f"evidence: {info.image_unit_source}")
+    suffix = f" ({'; '.join(details)})" if details else ""
+    lines = [f"Image pixel units: {unit_label}{suffix}."]
+    if info.image_unit_kind == "unknown":
+        lines.append(
+            f"Unit note: {info.image_unit_reason}. Automatic V_lim and "
+            "catalog-based zero-point calibration require recognized units."
+        )
     return lines
 
 
@@ -441,13 +317,22 @@ def compute_trail_length(info: ImageInfo, table):
     2) by multiplying sky_speed * exp_time and converting it to arcseconds and then to pixels. 
     We prefer the second way. 
     """
-    if info.exptime is None:
+    exposure_duration = (
+        info.trail_duration
+        if info.trail_duration is not None
+        else (
+            info.observation_duration
+            if info.observation_duration is not None
+            else info.exptime
+        )
+    )
+    if exposure_duration is None:
         table["trail_length"] = np.full(len(table), np.nan) * u.arcsec
         _set_pixel_trail_column(table, np.full(len(table), np.nan))
         return
 
     sky_speed = table["sky_speed"] # already in arcsec/hour
-    exptime = info.exptime.to(u.s) 
+    exptime = exposure_duration.to(u.s)
     pixel_scale = info.pixel_scale * u.arcsec / u.pixel
     trail_length = (sky_speed * exptime).to(u.arcsec)
     table["trail_length"] = trail_length

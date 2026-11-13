@@ -20,15 +20,6 @@ from functools import lru_cache
 # Keys used by the JSON file.
 KEY_LONGITUDE, KEY_COS, KEY_SIN, KEY_NAME = "Longitude", "cos", "sin", "Name"
 
-# Header keywords with the site position: degrees (east positive), degrees
-# (north positive) and metres above sea level. Only numeric values are used.
-LON_KEYWORDS = ("SITELON", "OBSLON", "LONGITUD", "OAJ TEL GEOLON")
-LAT_KEYWORDS = ("SITELAT", "OBSLAT", "LATITUDE", "OAJ TEL GEOLAT")
-ALT_KEYWORDS = ("OBSALT", "ALTITUDE", "OAJ TEL GEOELEV")
-
-# Header keywords with the telescope / site name.
-SITE_NAME_KEYWORDS = ("TELESCOP", "OBSERVAT")
-
 # Words that say nothing about the site.
 GENERIC_WORDS = {"observatory", "observatorio", "observatoire", "telescope",
                  "telescopio", "station", "obs", "inch", "the", "and"}
@@ -99,18 +90,6 @@ def load_obscodes_safe(path):
         return None
 
 
-def _first_number(header, keywords):
-    for key in keywords:
-        if key in header:
-            try:
-                value = float(header[key])
-            except (TypeError, ValueError):
-                continue
-            if math.isfinite(value):
-                return value
-    return None
-
-
 def _by_coordinates(obscodes, xyz):
     """Codes at the position xyz: the nearest one and those at its site."""
     near = sorted((math.dist(xyz, e["xyz"]), code) for code, e in obscodes.items())
@@ -146,16 +125,28 @@ def _describe(obscodes, group, header_tokens, how):
 
 
 def find_code(obscodes, header):
-    """Return (code, message). code is None if no unambiguous match exists."""
-    names = [str(header[k]).strip() for k in SITE_NAME_KEYWORDS if k in header]
+    """Match normalized site metadata; return None if the match is ambiguous."""
+    names = [
+        str(header[key]).strip()
+        for key in ("TELESCOP", "OBSERVAT")
+        if key in header
+    ]
     header_tokens = set()
     for name in names:
         header_tokens |= _tokens(name)
 
-    lon = _first_number(header, LON_KEYWORDS)
-    lat = _first_number(header, LAT_KEYWORDS)
+    try:
+        lon = float(header["SITELON"])
+        lat = float(header["SITELAT"])
+    except (KeyError, TypeError, ValueError):
+        lon = lat = None
     if lon is not None and lat is not None and -90 <= lat <= 90:
-        alt = _first_number(header, ALT_KEYWORDS) or 0.0
+        try:
+            alt = float(header.get("OBSALT", 0.0))
+        except (TypeError, ValueError):
+            alt = 0.0
+        if not math.isfinite(alt):
+            alt = 0.0
         group = _by_coordinates(obscodes, site_xyz(lon, lat, alt))
         if group:
             return _describe(obscodes, group, header_tokens, "coordinates")

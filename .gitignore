@@ -24,8 +24,9 @@ build
 tests/
 # ASTAP catalogs are large external data; download them locally when needed.
 astap/
-docs/limiting_magnitude_guide.pdf
-docs/limiting_magnitude_guide.md
 database/
 jpl_horizons_cache.db
 *.db
+jpod/doubts.txt
+jpod/jplus_image_diagnostics.py
+

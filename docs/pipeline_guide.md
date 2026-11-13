@@ -40,18 +40,22 @@ measurement pass.
 ### 1.2 `load_image()`: pixels, WCS, and metadata
 
 [`load_image()`](../jpod/image_geometry.py#L40) in `image_geometry.py` opens
-the FITS file and reads the **primary HDU's** header and pixel array. The
-returned `ImageInfo` object is the shared bundle of information used by later
-steps. At a high level it contains:
+the FITS file once, selects the science image HDU, and reads its header and
+pixel array. It passes that already-read header to
+[`resolve_header_metadata()`](../jpod/fits_header/metadata.py), which applies a detected
+header profile and returns normalized values with their source cards. The
+returned `ImageInfo` object is the shared bundle used by later steps. At a
+high level it contains:
 
 - the image data array and its width and height;
 - a WCS (World Coordinate System) made from the FITS header;
 - sky coordinates for the image center and four corners;
 - pixel scale in arcseconds per pixel;
-- the observation time, exposure start/end, and exposure duration;
+- the observation time, start/end interval, keyword exposure-time value, and
+  separately calculated observation duration;
 - the resolved observatory code and where it came from;
-- selected header values: `FWHM`, `ZP`, `MAGZERO`, `PHOTZP`, `SATURATE` or
-  `SATLEVEL`, `EGAIN` or `GAIN`, and `FILTER`; and
+- selected header values: FWHM with source and units, `ZP`, `MAGZERO`,
+  `PHOTZP`, `SATURATE` or `SATLEVEL`, `EGAIN` or `GAIN`, and `FILTER`; and
 - `BUNIT` plus relevant unit-related card comments, used to classify pixels
   as integrated ADU/DN, integrated electrons, ADU/DN per second, electrons per
   second, or unknown.
@@ -61,40 +65,60 @@ coordinates (right ascension and declination); the WCS projects those
 coordinates to image pixels so the program can match catalog and detected
 stars.
 
-#### Observatory-code helper calls
+#### Header profiles and normalized metadata
 
-`load_image()` asks `load_obscodes_safe()` to read the MPC observatory-code
-list, then calls `get_observatory_code()`:
+[`metadata.py`](../jpod/fits_header/metadata.py) is the central place for interpreting
+raw metadata cards. It receives the selected Astropy header from
+`load_image()` and does not open the FITS file itself.
+`select_header_profile()` chooses the J-PLUS profile only when distinctive
+OAJ cards are present; otherwise the generic profile is used. Profiles map
+survey-specific aliases and units to common fields, not image-analysis or
+photometry algorithms.
 
-1. `get_observatory_code()` first checks header keywords `OBSCODE`,
-   `MPCCODE`, and `OBS-CODE`.
-2. If those do not provide a valid code, it calls `find_code()` in
-   `fits_header/obscodes.py`. The list can be matched against the site's
-   longitude/latitude or, if needed, telescope/site names.
-3. If there is no unambiguous list match, the user-supplied `--observatory`
-   value is used when provided.
-4. Otherwise, the code uses geocentric MPC code `500` and prints a warning.
+For example, the J-PLUS profile recognizes `OAJ PRO FWHMSEXT` as arcseconds
+and maps `OAJ TEL GEOLON`, `OAJ TEL GEOLAT`, and `OAJ TEL GEOELEV` to
+normalized site coordinates. Generic `FWHM` continues to mean pixels. Add
+new card aliases and units to a profile when a survey convention is verified.
 
-This code identifies the observing site for ephemeris calculations; it is
-separate from image photometry.
+The metadata resolver checks explicit observatory-code cards first, then
+normalizes site coordinates and names for `find_code()` in
+`fits_header/obscodes.py`. If no unambiguous list match exists, the
+user-supplied `--observatory` value is used; otherwise geocentric MPC code
+`500` is used with a warning. The observatory code is for ephemeris
+calculations and is separate from image photometry.
 
-#### Observation-time helper calls
+#### Observation-time metadata
 
-`load_image()` also calls `get_obs_times()`:
+The normalized metadata keeps the selected timestamp, keyword exposure-time
+value, and observation interval distinct:
 
-1. `get_header_time()` searches an ordered list of common timestamp keywords
-   such as `DATE-AVG`, `DATE-BEG`, `DATE-OBS`, `OBSJD`, and `MJD-OBS`.
-2. The time's meaning (exposure start, middle, or end) is inferred from the
-   keyword definition or its FITS comment. `DATE-OBS` with no clear comment
-   defaults to start, following the documented FITS convention. Module-level
-   overrides in `main.py` can replace this behavior.
-3. `get_exposure_time()` searches `EXPTIME`, `EXPOSURE`, and `EXPTIM`.
-4. From the selected reference time and duration, the helper calculates the
-   exposure start and end. If duration is missing, it warns and sets both
-   start and end equal to the selected time.
+- Timestamp aliases are shared generic rules such as `DATE-AVG`, `DATE-BEG`,
+  `DATE-OBS`, `OBSJD`, and `MJD-OBS`. Their reference (start, middle, end) is
+  taken from the keyword definition or comment; ambiguous `DATE-OBS` defaults
+  to start. Module-level overrides in `main.py` remain available.
+- The legacy exposure-time value is read from `EXPTIME`, `EXPOSURE`, or
+  `EXPTIM`; photometric calculations continue to use this value. The J-PLUS
+  profile separately reads `TEXPTIME` as its total exposure-time value.
+- Explicit `DATE-END` or `MJD-END` cards determine the observation end when
+  present; otherwise the interval is derived from the timestamp reference and
+  exposure-time value.
+- A manually configured observation timestamp takes precedence over a header
+  end timestamp. If the start/end interval cannot be determined from the
+  available cards (for example, no exposure value and a midpoint timestamp),
+  its duration remains unavailable rather than being guessed.
+- Both exposure-time values and the start/end-derived interval are retained.
+  The profile's `trail_duration_preference` chooses the duration for trail
+  calculations: J-PLUS currently prefers `TEXPTIME`, then the observation
+  interval, then the ordinary exposure-time value. The generic profile prefers
+  the observation interval, then the ordinary exposure-time value. Change that
+  profile setting to alter precedence. The chosen value and
+  source are printed; it does not change photometric exposure handling or
+  infer pixel normalization.
 
-The pipeline prints `describe_time(info)` so the chosen timestamp, its
-interpretation, and exposure interval can be checked in the terminal.
+`describe_time(info)` reports the selected timestamp, the ordinary and total
+exposure-time values, the observation interval, and the selected trail
+duration. `describe_units(info)` reports the interpreted image-pixel units,
+the source cards, and any reason the units remain unknown.
 
 #### Other FITS cards collected
 
@@ -283,9 +307,9 @@ is used only when the image is explicitly recognized as V band.
 | Function | File | Role in this part of the pipeline |
 |---|---|---|
 | `pipeline()` | [`main.py`](../jpod/main.py#L137) | Orchestrates image loading, measurements, calibration, limit calculation, and later detection. |
-| `load_image()` | [`image_geometry.py`](../jpod/image_geometry.py#L40) | Reads primary image/header, classifies pixel units, and constructs the `ImageInfo` context. |
-| `get_observatory_code()` | [`fits_header/fits_header.py`](../jpod/fits_header/fits_header.py#L59) | Resolves the MPC observing-site code. |
-| `get_obs_times()` | [`fits_header/fits_header.py`](../jpod/fits_header/fits_header.py#L159) | Interprets header time and calculates exposure start/end. |
+| `load_image()` | [`image_geometry.py`](../jpod/image_geometry.py#L40) | Reads the science image/header once, builds WCS, and constructs `ImageInfo`. |
+| `resolve_header_metadata()` | [`metadata.py`](../jpod/fits_header/metadata.py) | Applies a header profile and resolves normalized metadata with source/unit information. |
+| `get_observatory_code()` | [`metadata.py`](../jpod/fits_header/metadata.py) | Resolves the MPC observing-site code from normalized site metadata. |
 | `measure_image()` | [`image_analysis.py`](../jpod/image_analysis.py#L45) | Estimates background/noise, FWHM, candidate star profiles, and aperture fluxes. |
 | `determine_zero_point()` | [`photometric_calibration.py`](../jpod/photometric_calibration.py#L44) | Returns a header zero point or calculates one from V50 matches. |
 | `calculate_limiting_magnitude()` | [`photometric_calibration.py`](../jpod/photometric_calibration.py#L184) | Turns unit-aware background, FWHM, gain, exposure, zero point, and SNR into \(V_{\rm lim}\). |
@@ -502,7 +526,7 @@ classification describes the existing values; it does not transform them.
 
 ### A.3 Observatory lookup, one helper level deeper
 
-[`get_observatory_code()`](../jpod/fits_header/fits_header.py#L59) follows a
+[`get_observatory_code()`](../jpod/fits_header/metadata.py) follows a
 fixed priority:
 
 1. Try `OBSCODE`, `MPCCODE`, and `OBS-CODE`; accept a code matching three
@@ -525,18 +549,18 @@ the photometric zero point.
 
 ### A.4 Time interpretation, one helper level deeper
 
-[`get_obs_times()`](../jpod/fits_header/fits_header.py#L159) asks
-[`get_header_time()`](../jpod/fits_header/fits_header.py#L117) to scan
+[`get_obs_times()`](../jpod/fits_header/metadata.py) asks
+[`get_header_time()`](../jpod/fits_header/metadata.py) to scan
 `TIME_KEYWORDS` in order. `get_header_time()` delegates parsing to
-[`_read_time()`](../jpod/fits_header/fits_header.py#L94) for ISO strings,
+[`_read_time()`](../jpod/fits_header/metadata.py) for ISO strings,
 Julian dates, or modified Julian dates. A recognized keyword can define a
 time as the exposure start, middle, or end. If the keyword does not define
-it, [`_meaning_from_comment()`](../jpod/fits_header/fits_header.py#L108)
+it, [`_meaning_from_comment()`](../jpod/fits_header/metadata.py)
 looks for words such as “start”, “mid”, or “end” in the FITS comment. A
 configured `TIME_REFERENCE` overrides this; otherwise an unclear time is
 assumed to be the exposure start.
 
-[`get_exposure_time()`](../jpod/fits_header/fits_header.py#L146) searches
+[`get_exposure_time()`](../jpod/fits_header/metadata.py) searches
 `EXPTIME`, `EXPOSURE`, and `EXPTIM`, accepting a positive numeric value and
 expressing it in seconds. From that duration and the timestamp reference,
 `get_obs_times()` calculates `start_obs` and `end_obs`. Thus a header

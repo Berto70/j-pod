@@ -12,6 +12,7 @@ from .image_geometry import (
     image_orientation,
     load_image,
     describe_time,
+    describe_units,
     search_radius,
     compute_trail_length,
 )
@@ -151,33 +152,33 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
     angle_north, angle_east, parity = image_orientation(info.wcs, info.center)
     # Background, FWHM, detected stars, and aperture fluxes share one analysis.
     measurements = measure_image(info)
-    unit_label = {
-        "adu": "integrated ADU/DN",
-        "electron": "integrated electrons",
-        "adu_per_second": "ADU/DN per second",
-        "electron_per_second": "electrons per second",
-        "unknown": "unknown",
-    }[info.image_unit_kind]
-    unit_details = []
-    if info.bunit:
-        unit_details.append(f"BUNIT={info.bunit!r}")
-    if info.image_unit_source:
-        unit_details.append(f"evidence: {info.image_unit_source}")
-    unit_suffix = f" ({'; '.join(unit_details)})" if unit_details else ""
-    print(f"Image pixel units: {unit_label}{unit_suffix}.")
-    if info.image_unit_kind == "unknown":
+    for line in describe_units(info):
+        print(line)
+    if info.header_fwhm is not None:
+        header_fwhm_note = (
+            f"{info.header_fwhm_value:.2f} {info.header_fwhm_unit}"
+            if info.header_fwhm_value is not None
+            else f"{info.header_fwhm:.2f} pixels"
+        )
         print(
-            f"Unit note: {info.image_unit_reason}. Automatic V_lim and "
-            "catalog-based zero-point calibration require recognized units."
+            f"Header FWHM: {header_fwhm_note} "
+            f"({info.header_fwhm:.2f} pixels; {info.header_fwhm_source})"
+        )
+    else:
+        print("Header FWHM: unavailable")
+    if measurements.measured_fwhm_pixels is not None:
+        print(
+            f"Image-measured FWHM: "
+            f"{measurements.measured_fwhm_pixels:.2f} pixels"
         )
     fwhm_pixels = measurements.fwhm_pixels
     if fwhm_pixels is not None:
-        print(f"Stellar FWHM: {fwhm_pixels:.2f} pixels")
+        print(f"FWHM used for analysis: {fwhm_pixels:.2f} pixels")
     else:
         print(
-            "Stellar FWHM unavailable: no suitable stellar profiles and no "
-            "usable FWHM in the FITS header. Continuing without trailing-loss "
-            "correction and using --vlim."
+            "FWHM unavailable: no usable header value or suitable stellar "
+            "profiles. Continuing without trailing-loss correction and using "
+            "--vlim."
         )
     workdir = args.workdir.resolve() if args.workdir else Path.cwd()
     catalog_dir = resolve_v50_catalog_dir(workdir)

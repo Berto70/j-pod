@@ -40,6 +40,7 @@ class ImageMeasurements:
     background: np.ndarray
     noise: float
     stars: tuple[ImageStar, ...]
+    measured_fwhm_pixels: float | None = None
 
 
 def measure_image(image_info: ImageInfo) -> ImageMeasurements:
@@ -224,6 +225,7 @@ def measure_image(image_info: ImageInfo) -> ImageMeasurements:
         background,
         noise,
         tuple(calibrated_stars),
+        measured_fwhm,
     )
 
 
