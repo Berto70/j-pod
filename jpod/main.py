@@ -111,8 +111,8 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--snr",
         type=_positive_float,
-        default=3.0,
-        help="SNR threshold for the automatic sky-noise limiting magnitude (default: 3)",
+        default=5.0,
+        help="SNR threshold for the automatic sky-noise limiting magnitude (default: 5)",
     )
     parser.add_argument("--sigmav", type=float, default=0.5, help="Standard deviation of the magnitude")
     parser.add_argument("--pmin", type=float, default=0.05, help="Minimum detection probability")
