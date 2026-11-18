@@ -36,6 +36,7 @@ class ImageInfo:
     exptime: u.Quantity | None
     time_source: str          # where the time was found
     header_fwhm: float | None # Header FWHM normalized to pixels
+    header_lim_mag: float | None # Header limiting magnitude (in the image's native filter)
     header_zero_points: tuple[tuple[str, float], ...]
     header_saturation: float | None
     header_gain_e_per_adu: float | None
@@ -124,6 +125,7 @@ def load_image(fits_file: str, observatory_code = None, time_reference = None, d
         texptime_source=metadata.texptime_source,
         time_source=metadata.time_source,
         header_fwhm=metadata.header_fwhm_pixels,
+        header_lim_mag=metadata.header_lim_mag,
         header_zero_points=metadata.header_zero_points,
         header_saturation=metadata.header_saturation,
         header_gain_e_per_adu=metadata.header_gain_e_per_adu,

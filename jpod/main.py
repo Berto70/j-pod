@@ -180,72 +180,77 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
             "profiles. Continuing without trailing-loss correction and using "
             "--vlim."
         )
-    workdir = args.workdir.resolve() if args.workdir else Path.cwd()
-    catalog_dir = resolve_v50_catalog_dir(workdir)
-    zero_point = determine_zero_point(info, measurements, catalog_dir)
+    m_lim =info.header_lim_mag
     v_lim = args.vlim
-    if zero_point.value is not None:
-        if zero_point.matched_stars:
-            print(
-                f"Photometric zero point: {zero_point.value:.3f} "
-                f"({zero_point.source}; {zero_point.matched_stars} stars, "
-                f"robust scatter {zero_point.scatter:.3f} mag)",
-                flush=True,
-            )
-        else:
-            print(
-                f"Photometric zero point: {zero_point.value:.3f} "
-                f"({zero_point.source})",
-                flush=True,
-            )
-        if is_v_filter(info.filter_name):
-            limiting_magnitude = calculate_limiting_magnitude(
-                info,
-                measurements,
-                zero_point.value,
-                args.snr,
-            )
-            if limiting_magnitude.value is not None:
-                v_lim = limiting_magnitude.value
-                gain_note = (
-                    f", gain {limiting_magnitude.gain_e_per_adu:.3g} "
-                    "electrons/ADU or DN"
-                    if limiting_magnitude.gain_e_per_adu is not None
-                    else ""
-                )
+    if m_lim is not None:
+        print(f"Header limiting magnitude: {m_lim:.2f} (filter: {info.filter_name})")
+    else: 
+        # Try to estimate limiting magnitude from the image if possible
+        workdir = args.workdir.resolve() if args.workdir else Path.cwd()
+        catalog_dir = resolve_v50_catalog_dir(workdir)
+        zero_point = determine_zero_point(info, measurements, catalog_dir)
+        if zero_point.value is not None:
+            if zero_point.matched_stars:
                 print(
-                    f"Median sky background: "
-                    f"{limiting_magnitude.background_per_pixel:.3f} "
-                    f"{limiting_magnitude.background_unit}; sky noise in the "
-                    f"FWHM aperture: {limiting_magnitude.sky_noise_per_second:.3f} "
-                    f"{limiting_magnitude.rate_unit}"
-                    f"{gain_note}.",
-                    flush=True,
-                )
-                print(
-                    f"Calculated V_lim: {v_lim:.2f} "
-                    f"(SNR threshold {args.snr:g}); using this value.",
+                    f"Photometric zero point: {zero_point.value:.3f} "
+                    f"({zero_point.source}; {zero_point.matched_stars} stars, "
+                    f"robust scatter {zero_point.scatter:.3f} mag)",
                     flush=True,
                 )
             else:
                 print(
-                    f"Automatic V_lim unavailable: "
-                    f"{limiting_magnitude.unavailable_reason}. "
-                    f"Continuing with --vlim={v_lim:.2f}.",
+                    f"Photometric zero point: {zero_point.value:.3f} "
+                    f"({zero_point.source})",
+                    flush=True,
+                )
+            if is_v_filter(info.filter_name):
+                limiting_magnitude = calculate_limiting_magnitude(
+                    info,
+                    measurements,
+                    zero_point.value,
+                    args.snr,
+                )
+                if limiting_magnitude.value is not None:
+                    v_lim = limiting_magnitude.value
+                    gain_note = (
+                        f", gain {limiting_magnitude.gain_e_per_adu:.3g} "
+                        f"electrons/ADU or DN"
+                        if limiting_magnitude.gain_e_per_adu is not None
+                        else ""
+                    )
+                    print(
+                        f"Median sky background: "
+                        f"{limiting_magnitude.background_per_pixel:.3f} "
+                        f"{limiting_magnitude.background_unit}; sky noise in the "
+                        f"FWHM aperture: {limiting_magnitude.sky_noise_per_second:.3f} "
+                        f"{limiting_magnitude.rate_unit}"
+                        f"{gain_note}.",
+                        flush=True,
+                    )
+                    print(
+                        f"Calculated V_lim: {v_lim:.2f} "
+                        f"(SNR threshold {args.snr:g}); using this value.",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"Automatic V_lim unavailable: "
+                        f"{limiting_magnitude.unavailable_reason}. "
+                        f"Continuing with --vlim={v_lim:.2f}.",
+                        flush=True,
+                    )
+            else:
+                print(
+                    f"Automatic V_lim is currently supported only for V-band "
+                    f"images. Continuing with --vlim={v_lim:.2f}.",
                     flush=True,
                 )
         else:
             print(
-                f"Automatic V_lim is currently supported only for V-band "
-                f"images. Continuing with --vlim={v_lim:.2f}.",
+                f"Photometric zero point unavailable: {zero_point.unavailable_reason}. "
+                f"Continuing with --vlim={args.vlim:.2f}.",
                 flush=True,
             )
-    else:
-        print(
-            f"Photometric zero point unavailable: {zero_point.unavailable_reason}. "
-            f"Continuing with --vlim={args.vlim:.2f}.",
-            flush=True,
-        )
     print()
     print(
         f"At the image center: North points at {angle_north:.4f} deg, "

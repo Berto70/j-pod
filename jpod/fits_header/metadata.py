@@ -96,6 +96,7 @@ class HeaderMetadata:
     header_fwhm_value: float | None
     header_fwhm_unit: str | None
     header_fwhm_source: str | None
+    header_lim_mag: float | None
     header_zero_points: tuple[tuple[str, float], ...]
     header_saturation: float | None
     header_gain_e_per_adu: float | None
@@ -158,6 +159,8 @@ def resolve_header_metadata(
     else:
         fwhm_pixels = fwhm_value
 
+    header_lim_mag = header["MAGLIM"] if "MAGLIM" in header else None
+
     header_zero_points = []
     for keyword in ("ZP", "MAGZERO", "PHOTZP"):
         if keyword not in header:
@@ -194,6 +197,7 @@ def resolve_header_metadata(
         fwhm_value,
         fwhm_unit,
         fwhm_source,
+        header_lim_mag,
         tuple(header_zero_points),
         header_saturation,
         header_gain,
