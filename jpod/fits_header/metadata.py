@@ -36,8 +36,8 @@ class HeaderProfile:
 
 
 GENERIC_PROFILE = HeaderProfile("generic")
-JPLUS_PROFILE = HeaderProfile(
-    "J-PLUS",
+OAJ_PROFILE = HeaderProfile(
+    "OAJ",
     signature_cards=("OAJ TEL GEOLON", "OAJ PRO FWHMSEXT"),
     longitude_cards=GENERIC_PROFILE.longitude_cards + ("OAJ TEL GEOLON",),
     latitude_cards=GENERIC_PROFILE.latitude_cards + ("OAJ TEL GEOLAT",),
@@ -49,7 +49,7 @@ JPLUS_PROFILE = HeaderProfile(
     texptime_cards=("TEXPTIME",),
     trail_duration_preference="texptime",
 )
-HEADER_PROFILES = (JPLUS_PROFILE, GENERIC_PROFILE)
+HEADER_PROFILES = (OAJ_PROFILE, GENERIC_PROFILE)
 
 TIME_KEYWORDS = (
     ("DATE-AVG", "iso", "mid"),
