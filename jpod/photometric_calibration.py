@@ -215,7 +215,7 @@ def calculate_limiting_magnitude(
     zero_point: float,
     snr_threshold: float = 3.0,
 ) -> LimitingMagnitudeResult:
-    """Estimate a V limit from sky Poisson noise in the FWHM-radius aperture.
+    """Estimate a V limit from sky Poisson noise in a 3 arcseconds-diameter aperture.
 
     The zero point is defined for flux per second in the native image unit.
     """
@@ -228,12 +228,7 @@ def calculate_limiting_magnitude(
         return _limiting_magnitude_unavailable("zero point must be finite")
     if not np.isfinite(snr_threshold) or snr_threshold <= 0:
         return _limiting_magnitude_unavailable("SNR threshold must be positive")
-    if (
-        measurements.fwhm_pixels is None
-        or not np.isfinite(measurements.fwhm_pixels)
-        or measurements.fwhm_pixels <= 0
-    ):
-        return _limiting_magnitude_unavailable("FWHM is unavailable")
+
 
     background = np.asarray(measurements.background, dtype=float)
     finite_background = background[np.isfinite(background)]
@@ -250,8 +245,8 @@ def calculate_limiting_magnitude(
         return _limiting_magnitude_unavailable(
             f"image units are ambiguous: {image_info.image_unit_reason}"
         )
-
-    aperture_area = float(np.pi * measurements.fwhm_pixels**2)
+    diameter = (3.0 / image_info.pixel_scale) # convert 3 arcseconds to pixels
+    aperture_area = float(np.pi * (diameter / 2)**2)
     is_adu = unit_kind in {"adu", "adu_per_second"}
     gain = image_info.header_gain_e_per_adu if is_adu else None
     if is_adu and gain is None:
