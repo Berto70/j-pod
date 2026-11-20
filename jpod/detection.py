@@ -65,7 +65,7 @@ def _plain(column):
     return np.ma.filled(np.ma.asarray(values, dtype=float), np.nan)
 
 
-def add_detection_probability(table, info, v_lim, sigma_v=0.5,
+def add_detection_probability(table, info, v_lim, m_lim, sigma_v=0.5,
                               ellipse_nsigma=3.0, posunc_nsigma=1.0):
     """Add the columns P_pos, P_mag and P_det.
 
@@ -110,14 +110,20 @@ def add_detection_probability(table, info, v_lim, sigma_v=0.5,
     visual_magnitude = _plain(table["V"])
     if "V_trailing" in table.colnames:
         trail_adjusted_magnitude = _plain(table["V_trailing"])
-        magnitude_for_probability = np.where(
-            np.isfinite(trail_adjusted_magnitude),
-            trail_adjusted_magnitude,
-            visual_magnitude,
-        )
+        magnitude_for_probability = np.where( # if trail_adjusted_magnitude is finite, use it; otherwise use visual_magnitude
+                np.isfinite(trail_adjusted_magnitude),
+                trail_adjusted_magnitude,
+                visual_magnitude,
+            )
     else:
         magnitude_for_probability = visual_magnitude
-    p_mag = magnitude_probability(magnitude_for_probability, v_lim, sigma_v)
+    if m_lim is not None:
+        color_correction = -0.23 # r-V color correction (see Hoffmann et al. 2024). In the future it may be replaced with more complicated models
+        magnitude_for_probability += color_correction
+        sigma_m = sigma_v # linear tranformation for Gaussian random variables
+        p_mag = magnitude_probability(magnitude_for_probability, m_lim, sigma_m)
+    else:
+        p_mag = magnitude_probability(magnitude_for_probability, v_lim, sigma_v)
 
     table["P_pos"] = p_pos
     table["P_mag"] = p_mag

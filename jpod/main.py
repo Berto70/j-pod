@@ -143,14 +143,19 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
         fits_file, args.observatory, TIME_REFERENCE, DATE_OBS, OBSCODES_JSON
     )
 
-    # 2. Report the resolved image centre, observation interval, and orientation.
+    # 2.1 Report the resolved image centre, observation interval, and orientation.
     print(f"\nObservatory code: {info.observatory_code} ({info.obs_code_source})\n")
     print()
     for line in describe_time(info):
         print(line)
     print()
     angle_north, angle_east, parity = image_orientation(info.wcs, info.center)
-    # Background, FWHM, detected stars, and aperture fluxes share one analysis.
+    print(f"At the image center: North points at {angle_north:.4f} deg, "
+          f"East at {angle_east:.4f} deg (CCW from +x, 0 = right, 90 = up); "
+          f"parity = {parity:+d}"
+          )
+    print()
+    # 2.2 Measure the image properties: background, FWHM, detected stars, and aperture fluxes.
     measurements = measure_image(info)
     for line in describe_units(info):
         print(line)
@@ -180,6 +185,7 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
             "profiles. Continuing without trailing-loss correction and using "
             "--vlim."
         )
+    # 2.3 Determine the limiting magnitude for the image, either from the header or by estimating it from the image itself (if ZP is present or the image is in V-filter).
     m_lim =info.header_lim_mag
     v_lim = args.vlim
     if m_lim is not None:
@@ -252,12 +258,6 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
                 flush=True,
             )
     print()
-    print(
-        f"At the image center: North points at {angle_north:.4f} deg, "
-        f"East at {angle_east:.4f} deg (CCW from +x, 0 = right, 90 = up); "
-        f"parity = {parity:+d}"
-    )
-    print()
 
     # 3. Discover small bodies; both adapters return the shared provider schema.
     radius = search_radius(info, MARGIN)
@@ -302,7 +302,7 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
         return
 
     # 5. Combine positional and magnitude probabilities into the final score.
-    add_detection_probability(table, info, v_lim, args.sigmav)
+    add_detection_probability(table, info, v_lim, m_lim, args.sigmav)
     survivors = np.asarray(table["P_det"], dtype=float) >= args.pmin
     table["detectable"] = survivors
     n_surv = int(survivors.sum())
