@@ -326,7 +326,7 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
         title = None,
         output_dir=output_dir / "plots",
         output_file=f"{prefix}_candidates.png" if args.savefig else None,
-        V_lim=v_lim,
+        V_lim=m_lim if m_lim is not None else v_lim,
         P_min=args.pmin
         )
     plot_field(
@@ -341,7 +341,7 @@ def pipeline(fits_file: str, args: argparse.Namespace, output_dir: Path):
         title = None,
         output_dir=output_dir / "plots",
         output_file=f"{prefix}_survivors.png" if args.savefig else None,
-        V_lim=v_lim,
+        V_lim=m_lim if m_lim is not None else v_lim,
         P_min=args.pmin
         )
     if ZOOM_OBJECTS:

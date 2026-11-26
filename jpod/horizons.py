@@ -144,7 +144,7 @@ def _end_from_rates(ra_deg, dec_deg, ra_cosdec_rate, dec_rate, exposure_seconds)
     dec_end = np.asarray(dec_deg) + northward_change
     return ra_end, dec_end
 
-def _describe(jpl_data) -> str:
+def _describe(jpl_data, estimated_r_3sigma: float | None = None) -> str:
     """Summarize Horizons values for the progress log."""
     h_text = (
         f"{jpl_data['H']:.3f}" if jpl_data["H"] is not None else "not available"
@@ -158,6 +158,12 @@ def _describe(jpl_data) -> str:
             f"{jpl_data['SMIA_3sigma']:.3f} arcsec, "
             f"THETA_3sigma = {jpl_data['THETA_3sigma']:.3f} deg, "
             f"LOV PA = {jpl_data['LOV_PA']:.3f} deg"
+        )
+    elif estimated_r_3sigma is not None:
+        arc_days = jpl_data.get("data_arc_days")
+        arc_info = f"arc = {arc_days:.1f}d, " if arc_days is not None else ""
+        ellipse_text = (
+            f"3-sigma radius = {estimated_r_3sigma:.3f} arcsec ({arc_info}estimated from Desmars et al. 2013)"
         )
     else:
         ellipse_text = "uncertainty ellipse not available"
@@ -187,6 +193,31 @@ def jpl_identifiers(table, row) -> list[str]:
         identifiers.append(name)
     return list(dict.fromkeys(identifiers))
 
+def _parse_horizons_header_arc(raw_response: str) -> tuple[float | None, float | None, float | None]:
+    """Extract data_arc_days from Horizons header."""
+    arc_days = None
+
+    # Example row in Horizons: 
+    # Case 1: explicit duration in days # obs: 243 (7 days)"
+    days_match = re.search(
+        r"#\s*obs:\s*\d+\s*\(\s*([0-9.]+)\s*days?\s*\)",
+        raw_response,
+        re.IGNORECASE,
+    )
+    if days_match:
+        arc_days = max(0.5, float(days_match.group(1))) # needed to avoid log(0)
+    else:
+        # Case 2: interval for longer arcs, e.g. "obs: 1070 (1993-2020)"
+        years_match = re.search(
+            r"#\s*obs:\s*\d+\s*\(\s*(\d{4})\s*-\s*(\d{4})\s*\)",
+            raw_response,
+        )
+        if years_match:
+            y_start = int(years_match.group(1))
+            y_end = int(years_match.group(2))
+            arc_days = max(365.25, (y_end - y_start) * 365.25)
+    return arc_days
+
 def query_jpl_horizons(identifier, epochs, location, use_cache=True) -> dict[str, float | None]:
     """Query Horizons for comparison-epoch and exposure endpoint values.
 
@@ -211,12 +242,13 @@ def query_jpl_horizons(identifier, epochs, location, use_cache=True) -> dict[str
         if cached_data is not None:
             return cached_data
 
-    ephemeris = Horizons(
+    horizons_query = Horizons(
         id=identifier,
         id_type="smallbody",
         location=location,
         epochs=[float(epoch.jd) for epoch in unique_epochs],
-    ).ephemerides()
+    )
+    ephemeris = horizons_query.ephemerides()
     if len(ephemeris) == 0:
         raise ValueError("Horizons returned no rows")
 
@@ -230,16 +262,25 @@ def query_jpl_horizons(identifier, epochs, location, use_cache=True) -> dict[str
         ephemeris, comparison_row
     )
     start_ra_rate, start_dec_rate, start_speed = _rates_at(ephemeris, start_row)
-
+    smaa_3sigma = _table_value(ephemeris, "SMAA_3sigma", u.arcsec, start_row)
+    smia_3sigma = _table_value(ephemeris, "SMIA_3sigma", u.arcsec, start_row)
     theta = _table_value(ephemeris, "Theta_3sigma", u.deg, start_row)
     lov_pa = None if theta is None else (90.0 - theta) % 180.0
 
+    data_arc_days = None
+    if smaa_3sigma is None or smia_3sigma is None:
+        last_resp = getattr(horizons_query, "last_response", None)
+        raw_text = getattr(last_resp, "text", "") or ""
+        data_arc_days= _parse_horizons_header_arc(raw_text)
+
+
     results = {
         "H": _table_value(ephemeris, "H", u.mag, start_row),
-        "SMAA_3sigma": _table_value(ephemeris, "SMAA_3sigma", u.arcsec, start_row),
-        "SMIA_3sigma": _table_value(ephemeris, "SMIA_3sigma", u.arcsec, start_row),
+        "SMAA_3sigma": smaa_3sigma,
+        "SMIA_3sigma": smia_3sigma,
         "THETA_3sigma": theta,
         "LOV_PA": lov_pa,
+        "data_arc_days": data_arc_days,
         "RA": start_ra,
         "DEC": start_dec,
         "RA_end": end_ra,
@@ -258,6 +299,25 @@ def query_jpl_horizons(identifier, epochs, location, use_cache=True) -> dict[str
         _save_jpl_cache(identifier, epochs_jd, location, results)
     
     return results
+
+def estimate_r_3sigma_desmars(arc_days:float | None)->float | None:
+    """Estimate the 3sigma uncertainty radius in arcseconds using Desmars et al. (2013) formula.
+    The formula is based on the data arc length in days:
+    r_3sigma = 3* 10^(a*log10(arc_days) + b)
+    where a,b are constants depending on various arc lengths and are described in Table 3.
+    """
+    if arc_days is None or arc_days <= 0:
+        return None
+    if arc_days < 10.0:
+        a_coef , b_coef = -1.448, 5.804
+    elif arc_days < 250.0:
+        a_coef, b_coef = -2.460, 6.774
+    elif arc_days < 8000.0:
+        a_coef, b_coef = -2.036, 6.528
+    else:
+        a_coef, b_coef = -0.254, -0.270
+    r_3sigma = 3.0 * 10.0**(a_coef * np.log10(arc_days) + b_coef)
+    return r_3sigma
 
 JPL_COLUMNS = (
     ("H", u.mag),
@@ -374,6 +434,15 @@ def enrich_with_horizons(table, start_obs, end_obs, observatory_code, use_cache=
         for name, unit in JPL_COLUMNS:
             if jpl_data[name] is not None:
                 table[name][row] = jpl_data[name] * unit
+        # Fallback to Desmars et al. 2013 if the ellipse is missing
+        r_3sigma = None
+        if jpl_data.get("SMAA_3sigma") is None or jpl_data.get("SMIA_3sigma") is None:
+            r_3sigma = estimate_r_3sigma_desmars(jpl_data.get("data_arc_days"))
+            if r_3sigma is not None:
+                table["SMAA_3sigma"][row] = r_3sigma * u.arcsec
+                table["SMIA_3sigma"][row] = r_3sigma * u.arcsec
+                table["THETA_3sigma"][row] = 0.0 * u.deg
+                table["LOV_PA"][row] = 0.0 * u.deg
         for name, unit in COMPARISON_COLUMNS:
             value = jpl_data.get(name)
             if value is not None:
@@ -397,7 +466,7 @@ def enrich_with_horizons(table, start_obs, end_obs, observatory_code, use_cache=
 
         print(
             f" [{row + 1}/{len(table)}] {object_name}: "
-            f"JPL Horizons: {_describe(jpl_data)}"
+            f"JPL Horizons: {_describe(jpl_data, estimated_r_3sigma = r_3sigma)}"
         )
     print(
         f"Horizons supplied rates for {n_jpl} of {len(table)} candidates. "
